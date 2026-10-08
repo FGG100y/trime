@@ -18,7 +18,6 @@ import com.osfans.trime.data.voice.SherpaOnnxEngine
 import com.osfans.trime.data.voice.VoiceModel
 import com.osfans.trime.data.voice.VoiceModelManager
 import com.osfans.trime.ime.core.TrimeInputMethodService
-import com.osfans.trime.ime.window.BoardWindowManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -60,7 +59,6 @@ sealed interface VoiceUiState {
 class VoiceInputManager(override val di: DI) : DIAware {
     private val context: ContextThemeWrapper by instance()
     private val service: TrimeInputMethodService by instance()
-    private val windowManager: BoardWindowManager by instance()
 
     private val prefs = AppPrefs.defaultInstance()
 
@@ -73,6 +71,7 @@ class VoiceInputManager(override val di: DI) : DIAware {
     val amplitude: StateFlow<Float> get() = recorder.amplitude
 
     private var job: Job? = null
+    private var inputDialog: VoiceInputDialog? = null
 
     /** Bumped on every new session so stale background results are ignored. */
     private var generation = 0
@@ -88,9 +87,16 @@ class VoiceInputManager(override val di: DI) : DIAware {
     /** Whether the on-device recogniser can run on this device. */
     val isSupported: Boolean get() = engine.isSupported
 
-    /** Attaches the voice panel to the keyboard area. */
+    /** Shows the floating voice input dialog. */
     fun open() {
-        windowManager.attachWindow(VoicePanelWindow(di))
+        val dialog = inputDialog ?: VoiceInputDialog(di, this).also { inputDialog = it }
+        dialog.show()
+    }
+
+    /** Called when the dialog is dismissed by the user (back or an outside tap). */
+    fun onDialogCancelled() {
+        releaseSession()
+        inputDialog = null
     }
 
     /** Starts a new recording session, loading the recognizer if needed. */
@@ -188,21 +194,26 @@ class VoiceInputManager(override val di: DI) : DIAware {
         close()
     }
 
-    /** Discards the pending transcription and clears the composing string. */
+    /** Discards the pending transcription and closes the dialog. */
     fun cancel() {
-        clearPendingComposing()
         close()
     }
 
-    /** Discards the current take and starts a new one. */
+    /** Discards the current take and starts a new one, keeping the dialog open. */
     fun retry() {
-        clearPendingComposing()
-        close()
+        releaseSession()
         start()
     }
 
-    /** Stops recording/recognising and resets the state. */
+    /** Stops recording/recognising, resets the state and closes the dialog. */
     fun close() {
+        releaseSession()
+        inputDialog?.dismiss()
+        inputDialog = null
+    }
+
+    /** Resets the session without touching the dialog. */
+    private fun releaseSession() {
         generation++
         job?.cancel()
         job = null

@@ -6,7 +6,13 @@
 
 package com.osfans.trime.ime.voice
 
+import android.app.AlertDialog
 import android.content.Intent
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
+import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -17,34 +23,35 @@ import android.widget.TextView
 import androidx.lifecycle.lifecycleScope
 import com.osfans.trime.R
 import com.osfans.trime.data.theme.ThemeScope
-import com.osfans.trime.ime.broadcast.InputBroadcastReceiver
 import com.osfans.trime.ime.core.TrimeInputMethodService
-import com.osfans.trime.ime.keyboard.KeyboardWindow
-import com.osfans.trime.ime.window.BoardWindow
-import com.osfans.trime.ime.window.BoardWindowManager
 import com.osfans.trime.ui.voice.VoicePermissionActivity
 import com.osfans.trime.util.AppUtils
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.kodein.di.DI
+import org.kodein.di.DIAware
 import org.kodein.di.instance
 
 /**
- * The panel shown in place of the keyboard while recording and while a
+ * Floating dialog shown while the local voice input is recording and while a
  * transcription is waiting to be confirmed.
  *
- * States are driven by [VoiceInputManager].
+ * Unlike the keyboard-free panel it replaces, the app and the keyboard stay
+ * visible and only the transcript pops up. States are driven by
+ * [VoiceInputManager].
  */
-class VoicePanelWindow(override val di: DI) :
-    BoardWindow.BarBoardWindow(di),
-    InputBroadcastReceiver {
+class VoiceInputDialog(
+    override val di: DI,
+    private val manager: VoiceInputManager,
+) : DIAware {
+    private val context: ContextThemeWrapper by instance()
     private val service: TrimeInputMethodService by instance()
-    private val manager: VoiceInputManager by instance()
-    private val windowManager: BoardWindowManager by instance()
     private val scope: ThemeScope by instance()
     private val colors get() = scope.colors
 
-    override val title: String get() = context.getString(R.string.voice_input)
+    private var dialog: AlertDialog? = null
+    private var stateJob: Job? = null
+    private var amplitudeJob: Job? = null
 
     private lateinit var statusView: TextView
     private lateinit var pendingView: TextView
@@ -54,27 +61,72 @@ class VoicePanelWindow(override val di: DI) :
     private lateinit var retryButton: Button
     private lateinit var cancelButton: Button
 
-    private var stateJob: Job? = null
-    private var amplitudeJob: Job? = null
-
     private val density get() = context.resources.displayMetrics.density
 
     private fun dp(value: Int): Int = (value * density).toInt()
 
-    private fun button(textRes: Int): Button = Button(context).apply {
-        setText(textRes)
-        setBackgroundColor(colors.keyBackColor)
-        setTextColor(colors.keyTextColor)
+    fun show() {
+        if (dialog?.isShowing == true) return
+
+        val alertDialog =
+            AlertDialog
+                .Builder(context)
+                .setView(buildContentView())
+                .create()
+        // The dialog chrome follows the IME theme, which may be dark while the
+        // Rime colour scheme is light; draw the whole card ourselves instead.
+        alertDialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        alertDialog.setCanceledOnTouchOutside(false)
+        alertDialog.setOnCancelListener { manager.onDialogCancelled() }
+        dialog = alertDialog
+
+        stateJob =
+            service.lifecycleScope.launch {
+                manager.state.collect { render(it) }
+            }
+        amplitudeJob =
+            service.lifecycleScope.launch {
+                manager.amplitude.collect { value ->
+                    levelView.progress = (value * 100).toInt().coerceIn(0, 100)
+                }
+            }
+
+        service.showDialog(alertDialog)
+        manager.start()
     }
 
-    override fun onCreateView(): View {
+    fun dismiss() {
+        stateJob?.cancel()
+        stateJob = null
+        amplitudeJob?.cancel()
+        amplitudeJob = null
+        dialog?.dismiss()
+        dialog = null
+    }
+
+    private fun buildContentView(): View {
+        val cardColor = colors.backColor
+        val cardBackground =
+            GradientDrawable().apply {
+                setColor(cardColor)
+                cornerRadius = dp(12).toFloat()
+            }
         val container =
             LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                setPadding(dp(12), dp(16), dp(12), dp(16))
-                setBackgroundColor(colors.backColor)
+                background = cardBackground
+                setPadding(dp(20), dp(16), dp(20), dp(12))
             }
+
+        val titleView =
+            TextView(context).apply {
+                text = context.getString(R.string.voice_input)
+                setTextColor(colors.keyTextColor)
+                textSize = 16f
+                setTypeface(typeface, Typeface.BOLD)
+                gravity = Gravity.CENTER
+            }
+        container.addView(titleView, matchWrap())
 
         statusView =
             TextView(context).apply {
@@ -89,6 +141,7 @@ class VoicePanelWindow(override val di: DI) :
                 setTextColor(colors.hilitedCandidateTextColor)
                 textSize = 20f
                 gravity = Gravity.CENTER
+                setTextIsSelectable(true)
                 visibility = View.GONE
             }
         container.addView(pendingView, matchWrap())
@@ -106,31 +159,25 @@ class VoicePanelWindow(override val di: DI) :
             ).apply { topMargin = dp(12) },
         )
 
-        val buttonRow =
-            LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
-            }
-
         actionButton = button(R.string.voice_start).apply {
             setOnClickListener { onActionClicked() }
         }
         confirmButton = button(R.string.voice_confirm).apply {
-            setOnClickListener {
-                manager.confirm()
-                backToKeyboard()
-            }
+            setOnClickListener { manager.confirm() }
         }
         retryButton = button(R.string.voice_retry).apply {
             setOnClickListener { manager.retry() }
         }
         cancelButton = button(R.string.voice_cancel).apply {
-            setOnClickListener {
-                manager.cancel()
-                backToKeyboard()
-            }
+            setOnClickListener { manager.cancel() }
         }
 
+        val buttonRow =
+            LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setPadding(0, dp(12), 0, 0)
+            }
         listOf(actionButton, confirmButton, retryButton, cancelButton).forEach {
             buttonRow.addView(it, wrapWrap())
         }
@@ -139,24 +186,10 @@ class VoicePanelWindow(override val di: DI) :
         return container
     }
 
-    override fun onAttached() {
-        stateJob = service.lifecycleScope.launch {
-            manager.state.collect { render(it) }
-        }
-        amplitudeJob = service.lifecycleScope.launch {
-            manager.amplitude.collect { value ->
-                levelView.progress = (value * 100).toInt().coerceIn(0, 100)
-            }
-        }
-
-        manager.start()
-        if (manager.isSupported && !manager.hasPermission()) launchPermissionActivity()
-    }
-
-    override fun onDetached() {
-        stateJob?.cancel()
-        amplitudeJob?.cancel()
-        manager.close()
+    private fun button(textRes: Int): Button = Button(context).apply {
+        setText(textRes)
+        setBackgroundColor(colors.keyBackColor)
+        setTextColor(colors.keyTextColor)
     }
 
     private fun onActionClicked() {
@@ -232,10 +265,6 @@ class VoicePanelWindow(override val di: DI) :
             Intent(context, VoicePermissionActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
-    }
-
-    private fun backToKeyboard() {
-        windowManager.attachWindow(KeyboardWindow)
     }
 
     private fun matchWrap() = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)

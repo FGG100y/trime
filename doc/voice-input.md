@@ -95,15 +95,16 @@ data/voice/
 ime/voice/
   AudioRecorder.kt          AudioRecord -> FloatArray, amplitude StateFlow
   VoiceInputManager.kt      orchestration + VoiceUiState StateFlow
-  VoicePanelWindow.kt       BoardWindow replacing the keyboard while active
+  VoiceInputDialog.kt       floating dialog showing status and transcript
 ui/voice/
   VoicePermissionActivity.kt  transparent activity requesting RECORD_AUDIO
 ```
 
 Reused infrastructure:
 
-- `BoardWindow` / `BoardWindowManager` (`ime/window/`) for the panel,
-  `KeyboardWindow` to return to the keyboard.
+- `TrimeInputMethodService.showDialog()`
+  (`TYPE_APPLICATION_ATTACHED_DIALOG`) for the floating dialog, which leaves
+  the keyboard in place instead of replacing the input area.
 - `TrimeInputMethodService.updateComposingText()` and `commitText()` to put the
   result in the editor and commit it.
 - `AppPrefs` delegates for settings.
@@ -118,7 +119,7 @@ long press space
        OFF      : nothing
        LOCAL    : VoiceInputManager.open()  (this document)
        EXTERNAL : switch to the system voice input method (old behaviour)
-  -> VoicePanelWindow attaches, VoiceInputManager.start()
+  -> VoiceInputDialog shows, VoiceInputManager.start()
        no permission -> VoicePermissionActivity
        no model      -> message + "open settings"
        else          -> load recognizer (cached) -> AudioRecorder.start()
@@ -127,7 +128,7 @@ long press space
   -> [Confirm] commitText / [Retry] record again / [Cancel] clear
 ```
 
-The panel calls `updateComposingText` rather than committing directly, so the
+The dialog calls `updateComposingText` rather than committing directly, so the
 text sits in the editor for review. While a transcription is pending, Rime must
 not overwrite the composing string; `VoiceInputManager` owns that state and
 clears it before any new Rime interaction. This is the most delicate part of the
@@ -135,7 +136,7 @@ integration and the first thing to regression-test.
 
 ## Settings
 
-*General → Long press space*: `Disabled` / `Local voice input` / `System voice
+*General → Long press space* (also shown on the *Local voice input* page): `Disabled` / `Local voice input` / `System voice
 input method` (default, preserves the old behaviour).
 
 *Settings → Local voice input*:
