@@ -16,6 +16,7 @@ import android.graphics.drawable.GradientDrawable
 import android.view.KeyEvent
 import com.mikepenz.iconics.IconicsDrawable
 import com.mikepenz.iconics.utils.sizeDp
+import com.osfans.trime.data.prefs.AppPrefs
 import com.osfans.trime.data.theme.Theme
 import com.osfans.trime.ime.core.TrimeInputMethodService
 import com.osfans.trime.ime.popup.PopupAction
@@ -158,6 +159,14 @@ class KeyView(
             if (key.popup.isNotEmpty()) {
                 dismissPopupPreview()
                 showPopupKeyboard()
+            } else if (key.code == KeyEvent.KEYCODE_SPACE && voiceInputTriggeredOnSpace()) {
+                // While the long-press-space voice input is enabled it takes over
+                // the space bar's own long-press action (a theme may bind one,
+                // e.g. a keyboard switch). Set the preference to "disabled" to
+                // get the theme's binding back.
+                keyboardActionListener.onAction(theme.resolveAction(Key.VOICE_ASSIST_ACTION))
+                setPressedState(false)
+                dismissPopupPreview()
             } else if (hasLongPress) {
                 key.getAction(KeyBehavior.LONG_CLICK)?.let {
                     processKeyAction(it, KeyBehavior.LONG_CLICK)
@@ -191,6 +200,8 @@ class KeyView(
             invalidate()
         }
     }
+
+    private fun voiceInputTriggeredOnSpace(): Boolean = AppPrefs.defaultInstance().general.voiceInputMode.getValue() != AppPrefs.General.VoiceInputMode.OFF
 
     private fun processKeyAction(action: KeyAction, behavior: KeyBehavior) {
         Timber.d("processKeyAction: label=${key.getLabel()}, code=${action.code}, type=$behavior")

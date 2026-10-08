@@ -296,7 +296,7 @@ class Key(
 
     companion object {
         /** Preset action name used by the long-press-space voice-input trigger. */
-        private const val VOICE_ASSIST_ACTION = "VOICE_ASSIST"
+        const val VOICE_ASSIST_ACTION = "VOICE_ASSIST"
     }
 
     val code: Int
