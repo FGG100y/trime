@@ -6,8 +6,8 @@ Design and implementation notes for Trime's optional, fully offline voice input.
 
 - Recognise speech **entirely on device**; audio never leaves the phone.
 - The app keeps its current privacy property of **not requesting `INTERNET`**.
-- Plug into the existing input flow: long press space, record, review the text in
-  the editor, then confirm or cancel.
+- Plug into the existing input flow: long press space, record, and insert the
+  transcript straight into the editor, undoable for a moment.
 
 ## Non-goals (v1)
 
@@ -26,7 +26,7 @@ Design and implementation notes for Trime's optional, fully offline voice input.
 | ABIs | `arm64-v8a` (x86_64 optional, for emulators) |
 | Native library | Prebuilt `.so` from the official sherpa-onnx AAR, for a first working version |
 | Trigger | The space key's long press, selectable in Settings |
-| Result | Shown in the editor as a composing string until confirmed |
+| Result | Inserted straight into the editor; undoable for a few seconds |
 | Streaming | Not used |
 | VAD | Not used in v1 (Silero VAD can be added later) |
 
@@ -146,20 +146,24 @@ long press space
        OFF      : nothing
        LOCAL    : VoiceInputManager.open()  (this document)
        EXTERNAL : switch to the system voice input method (old behaviour)
-  -> VoiceInputDialog shows, VoiceInputManager.start()
+  -> a non-modal banner shows at the top, VoiceInputManager.start()
        no permission -> VoicePermissionActivity
        no model      -> message + "open settings"
        else          -> load recognizer (cached) -> AudioRecorder.start()
   -> "Stop" -> AudioRecorder.stop() -> SherpaOnnxEngine.recognize()
-  -> updateComposingText(text): the text appears in the editor, underlined
-  -> [Confirm] commitText / [Retry] record again / [Cancel] clear
+  -> commitText(text): the text lands in the editor straight away
+  -> the banner offers [Undo] / [Retry] for a few seconds, then disappears
 ```
 
-The dialog calls `updateComposingText` rather than committing directly, so the
-text sits in the editor for review. While a transcription is pending, Rime must
-not overwrite the composing string; `VoiceInputManager` owns that state and
-clears it before any new Rime interaction. This is the most delicate part of the
-integration and the first thing to regression-test.
+The transcript is **committed**, never left as a composing string, so voice
+input never shares Rime's composing text. `[Undo]` only deletes anything while
+the transcript is still exactly in front of the cursor, which makes it safe
+alongside typing and cursor movement.
+
+The banner window is non-modal (`showDialog(..., floating = true)`): it does not
+dim the app and lets touches outside it through, so the user can keep browsing
+while dictating. This is the most delicate part of the integration and the first
+thing to regression-test.
 
 ## Settings
 
@@ -185,8 +189,10 @@ models live in app-private storage and are imported through SAF.
 2. Import `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17` (or the
    X-ASR release) and check that the transcript is punctuated.
 3. Set *Long press space* to *Local voice input*.
-4. Long press space, speak, stop, confirm. Check the text lands in the editor.
-5. Cancel and retry paths, and switching app while recording.
+4. Long press space, speak, stop. Check the text lands in the editor and the
+   banner offers *Undo* / *Retry*.
+5. Check *Undo* removes the text, *Retry* replaces it, and that the banner lets
+   you keep scrolling the app behind it (it is not modal).
 6. Confirm Rime composing still works right after a voice commit.
 7. Measure first-token latency and peak memory on a low-end device.
 

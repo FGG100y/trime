@@ -8,10 +8,13 @@ package com.osfans.trime.ime.voice
 
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
+import android.text.TextUtils
 import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.View
@@ -20,6 +23,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import androidx.core.graphics.ColorUtils
 import androidx.lifecycle.lifecycleScope
 import com.osfans.trime.R
 import com.osfans.trime.data.theme.ThemeScope
@@ -31,14 +35,39 @@ import kotlinx.coroutines.launch
 import org.kodein.di.DI
 import org.kodein.di.DIAware
 import org.kodein.di.instance
+import kotlin.math.log10
 
 /**
- * Floating dialog shown while the local voice input is recording and while a
- * transcription is waiting to be confirmed.
+ * How opaque the banner card is. Only the card background is made translucent;
+ * the text and buttons on top stay fully opaque so they remain readable.
+ */
+private const val CARD_ALPHA = 0.8f
+
+/** Corner radius of the pill buttons, in dp. */
+private const val BUTTON_RADIUS_DP = 20
+
+/** Alpha of the accent wash used as the primary button's fill on a light card. */
+private const val PRIMARY_FILL_ALPHA = 0.2f
+
+/** Card luminance above which the banner counts as "light". */
+private const val LIGHT_CARD_LUMINANCE = 0.5
+
+/** dB floor of the level meter: anything quieter than this reads as empty. */
+private const val LEVEL_FLOOR_DB = 60f
+
+/** Alpha of the level meter's track. */
+private const val LEVEL_TRACK_ALPHA = 0.15f
+
+/** Per-update release factor of the level meter; smaller falls back slower. */
+private const val LEVEL_RELEASE = 0.25f
+
+/**
+ * Floating banner shown while the local voice input is recording and while the
+ * inserted transcript can still be undone.
  *
- * Unlike the keyboard-free panel it replaces, the app and the keyboard stay
- * visible and only the transcript pops up. States are driven by
- * [VoiceInputManager].
+ * The window is non-modal: it sits at the top of the screen, does not dim the
+ * app and lets touches through, so the user can keep browsing the app while
+ * dictating. States are driven by [VoiceInputManager].
  */
 class VoiceInputDialog(
     override val di: DI,
@@ -53,17 +82,37 @@ class VoiceInputDialog(
     private var stateJob: Job? = null
     private var amplitudeJob: Job? = null
 
+    /** Smoothed 0..1 level, so the meter has a fast attack and a slow release. */
+    private var smoothedLevel = 0f
+
     private lateinit var statusView: TextView
-    private lateinit var pendingView: TextView
+    private lateinit var transcriptView: TextView
     private lateinit var levelView: ProgressBar
     private lateinit var actionButton: Button
-    private lateinit var confirmButton: Button
+    private lateinit var undoButton: Button
     private lateinit var retryButton: Button
     private lateinit var cancelButton: Button
 
     private val density get() = context.resources.displayMetrics.density
 
     private fun dp(value: Int): Int = (value * density).toInt()
+
+    /**
+     * Maps the raw RMS onto 0..1 over a [LEVEL_FLOOR_DB] window. Raw RMS hugs
+     * zero for anything but shouting, which is why the meter used to look like
+     * a static line.
+     */
+    private fun toLevel(rms: Float): Float {
+        if (rms <= 0f) return 0f
+        val db = 20f * log10(rms)
+        return ((db + LEVEL_FLOOR_DB) / LEVEL_FLOOR_DB).coerceIn(0f, 1f)
+    }
+
+    /** Instant attack, slow release, so the meter follows speech without flicker. */
+    private fun smoothLevel(current: Float, target: Float): Float = if (target > current) target else current + (target - current) * LEVEL_RELEASE
+
+    /** Scales what is left of [color]'s own alpha by [factor]. */
+    private fun Int.withAlpha(factor: Float): Int = ColorUtils.setAlphaComponent(this, (Color.alpha(this) * factor).toInt().coerceIn(0, 255))
 
     fun show() {
         if (dialog?.isShowing == true) return
@@ -84,14 +133,16 @@ class VoiceInputDialog(
             service.lifecycleScope.launch {
                 manager.state.collect { render(it) }
             }
+        smoothedLevel = 0f
         amplitudeJob =
             service.lifecycleScope.launch {
-                manager.amplitude.collect { value ->
-                    levelView.progress = (value * 100).toInt().coerceIn(0, 100)
+                manager.amplitude.collect { rms ->
+                    smoothedLevel = smoothLevel(smoothedLevel, toLevel(rms))
+                    levelView.progress = (smoothedLevel * 100).toInt().coerceIn(0, 100)
                 }
             }
 
-        service.showDialog(alertDialog)
+        service.showDialog(alertDialog, floating = true)
         manager.start()
     }
 
@@ -105,7 +156,7 @@ class VoiceInputDialog(
     }
 
     private fun buildContentView(): View {
-        val cardColor = colors.keyboardBackColor
+        val cardColor = colors.keyboardBackColor.withAlpha(CARD_ALPHA)
         val cardBackground =
             GradientDrawable().apply {
                 setColor(cardColor)
@@ -136,20 +187,26 @@ class VoiceInputDialog(
             }
         container.addView(statusView, matchWrap())
 
-        pendingView =
+        transcriptView =
             TextView(context).apply {
                 setTextColor(colors.candidateTextColor)
-                textSize = 20f
+                textSize = 18f
                 gravity = Gravity.CENTER
-                setTextIsSelectable(true)
+                maxLines = 3
+                ellipsize = TextUtils.TruncateAt.END
                 visibility = View.GONE
             }
-        container.addView(pendingView, matchWrap())
+        container.addView(transcriptView, matchWrap())
 
         levelView =
             ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
                 max = 100
                 visibility = View.GONE
+                // The dialog theme's tints do not follow the Rime scheme, so
+                // pick the colours here rather than let the meter blend into
+                // the card.
+                progressTintList = ColorStateList.valueOf(colors.keyTextColor)
+                progressBackgroundTintList = ColorStateList.valueOf(colors.keyTextColor.withAlpha(LEVEL_TRACK_ALPHA))
             }
         container.addView(
             levelView,
@@ -159,11 +216,11 @@ class VoiceInputDialog(
             ).apply { topMargin = dp(12) },
         )
 
-        actionButton = button(R.string.voice_start).apply {
+        actionButton = button(R.string.voice_start, primary = true).apply {
             setOnClickListener { onActionClicked() }
         }
-        confirmButton = button(R.string.voice_confirm).apply {
-            setOnClickListener { manager.confirm() }
+        undoButton = button(R.string.voice_undo).apply {
+            setOnClickListener { manager.undo() }
         }
         retryButton = button(R.string.voice_retry).apply {
             setOnClickListener { manager.retry() }
@@ -178,7 +235,7 @@ class VoiceInputDialog(
                 gravity = Gravity.CENTER
                 setPadding(0, dp(12), 0, 0)
             }
-        listOf(actionButton, confirmButton, retryButton, cancelButton).forEach {
+        listOf(actionButton, undoButton, retryButton, cancelButton).forEach {
             buttonRow.addView(it, wrapWrap())
         }
         container.addView(buttonRow, matchWrap())
@@ -186,10 +243,64 @@ class VoiceInputDialog(
         return container
     }
 
-    private fun button(textRes: Int): Button = Button(context).apply {
-        setText(textRes)
-        setBackgroundColor(colors.keyBackColor)
-        setTextColor(colors.keyTextColor)
+    /**
+     * A pill button with a ripple. The primary action carries the theme's
+     * highlighted key colour, the secondary ones the normal key colour. The
+     * default background, minimum sizes and elevation animator are dropped so
+     * the shape and the feedback are ours.
+     */
+    private fun button(textRes: Int, primary: Boolean = false): Button {
+        val accent = colors.hilitedKeyBackColor
+        // A solid accent is right on a dark card, where a wash would disappear;
+        // on a light card the wash is what keeps the button from turning into a
+        // dark block.
+        val darkCard = ColorUtils.calculateLuminance(colors.keyboardBackColor) < LIGHT_CARD_LUMINANCE
+        val fillColor =
+            when {
+                !primary -> colors.keyBackColor
+                darkCard -> accent
+                else -> accent.withAlpha(PRIMARY_FILL_ALPHA)
+            }
+        val contentColor = if (primary && darkCard) colors.hilitedKeyTextColor else colors.keyTextColor
+        val radius = dp(BUTTON_RADIUS_DP).toFloat()
+
+        val shape =
+            GradientDrawable().apply {
+                setColor(fillColor)
+                cornerRadius = radius
+            }
+        val background =
+            RippleDrawable(
+                ColorStateList.valueOf(contentColor.withAlpha(0.16f)),
+                shape,
+                // The mask clips the ripple to the rounded shape.
+                GradientDrawable().apply {
+                    setColor(Color.WHITE)
+                    cornerRadius = radius
+                },
+            )
+
+        return Button(context).apply {
+            setText(textRes)
+            this.background = background
+            // Button inherits a background tint from the dialog theme
+            // (Theme_DeviceDefault_Settings). RippleDrawable extends
+            // LayerDrawable, whose setTintList pushes the tint down to every
+            // layer, so our fill would be replaced by the theme's button
+            // colour. Clear it to keep the theme's key colours.
+            backgroundTintList = null
+            setTextColor(contentColor)
+            isAllCaps = false
+            stateListAnimator = null
+            minimumWidth = 0
+            minimumHeight = 0
+            setPadding(dp(20), dp(9), dp(20), dp(9))
+            textSize = 14f
+            letterSpacing = 0.02f
+            includeFontPadding = false
+            gravity = Gravity.CENTER
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        }
     }
 
     private fun onActionClicked() {
@@ -208,8 +319,8 @@ class VoiceInputDialog(
     }
 
     private fun render(state: VoiceUiState) {
-        pendingView.visibility = View.GONE
-        confirmButton.visibility = View.GONE
+        transcriptView.visibility = View.GONE
+        undoButton.visibility = View.GONE
         retryButton.visibility = View.GONE
         cancelButton.visibility = View.GONE
         actionButton.visibility = View.GONE
@@ -236,13 +347,12 @@ class VoiceInputDialog(
                 statusView.text = context.getString(R.string.voice_recognizing)
             }
 
-            is VoiceUiState.Pending -> {
-                statusView.text = ""
-                pendingView.text = state.text
-                pendingView.visibility = View.VISIBLE
-                confirmButton.visibility = View.VISIBLE
+            is VoiceUiState.Committed -> {
+                statusView.text = context.getString(R.string.voice_inserted)
+                transcriptView.text = state.text
+                transcriptView.visibility = View.VISIBLE
+                undoButton.visibility = View.VISIBLE
                 retryButton.visibility = View.VISIBLE
-                cancelButton.visibility = View.VISIBLE
             }
 
             is VoiceUiState.Failure -> {
@@ -270,7 +380,7 @@ class VoiceInputDialog(
     private fun matchWrap() = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
     private fun wrapWrap() = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-        marginStart = dp(4)
-        marginEnd = dp(4)
+        marginStart = dp(6)
+        marginEnd = dp(6)
     }
 }

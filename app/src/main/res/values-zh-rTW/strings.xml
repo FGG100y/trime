@@ -278,9 +278,10 @@
     <string name="voice_language__yue">粵語</string>
     <string name="voice_recording">正在聆聽……</string>
     <string name="voice_recognizing">正在辨識……</string>
-    <string name="voice_confirm">確認</string>
     <string name="voice_cancel">取消</string>
     <string name="voice_retry">重錄</string>
+    <string name="voice_undo">復原</string>
+    <string name="voice_inserted">已上屏</string>
     <string name="voice_permission_needed">本機語音輸入需要麥克風權限</string>
     <string name="voice_no_model">尚未安裝語音模型，請先在設定中匯入</string>
     <string name="voice_unsupported_abi">當前裝置架構不支援本地語音輸入</string>

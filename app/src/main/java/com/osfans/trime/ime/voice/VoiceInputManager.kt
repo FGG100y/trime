@@ -20,6 +20,7 @@ import com.osfans.trime.data.voice.VoiceModelManager
 import com.osfans.trime.ime.core.TrimeInputMethodService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -44,8 +45,8 @@ sealed interface VoiceUiState {
     /** Audio is being transcribed. */
     data object Recognizing : VoiceUiState
 
-    /** A transcription is waiting for the user to confirm it. */
-    data class Pending(val text: String) : VoiceUiState
+    /** The transcript was inserted; [text] can still be undone for a moment. */
+    data class Committed(val text: String) : VoiceUiState
 
     /** Something went wrong; [message] is already localised. */
     data class Failure(val message: String) : VoiceUiState
@@ -53,8 +54,12 @@ sealed interface VoiceUiState {
 
 /**
  * Drives the local (fully on-device) voice input flow:
- * record -> transcribe -> show the text as a composing string in the editor
- * until the user confirms or cancels it.
+ * record -> transcribe -> insert the text straight into the editor, with a
+ * short window in which the insertion can still be undone or re-recorded.
+ *
+ * The transcript is committed, never kept as a composing string: Rime owns the
+ * composing text, so sharing it with voice input is the fragile part the old
+ * confirm step relied on.
  */
 class VoiceInputManager(override val di: DI) : DIAware {
     private val context: ContextThemeWrapper by instance()
@@ -71,13 +76,14 @@ class VoiceInputManager(override val di: DI) : DIAware {
     val amplitude: StateFlow<Float> get() = recorder.amplitude
 
     private var job: Job? = null
+    private var autoHideJob: Job? = null
     private var inputDialog: VoiceInputDialog? = null
 
     /** Bumped on every new session so stale background results are ignored. */
     private var generation = 0
 
-    /** Text currently shown as a composing string, waiting for confirmation. */
-    private var pendingText: String = ""
+    /** Text inserted by the last session, kept only while it can still be undone. */
+    private var committedText: String = ""
 
     fun hasPermission(): Boolean = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
         PackageManager.PERMISSION_GRANTED
@@ -118,7 +124,6 @@ class VoiceInputManager(override val di: DI) : DIAware {
                 return
             }
 
-        clearPendingComposing()
         val current = ++generation
         _state.value = VoiceUiState.Loading
 
@@ -169,11 +174,7 @@ class VoiceInputManager(override val di: DI) : DIAware {
                         if (text.isBlank()) {
                             fail(R.string.voice_empty_result)
                         } else {
-                            pendingText = text
-                            // Put the recognised text into the editor as a composing
-                            // string, so the user can confirm it before it is committed.
-                            service.updateComposingText(text)
-                            _state.value = VoiceUiState.Pending(text)
+                            insertAndOfferUndo(text, current)
                         }
                     }.onFailure {
                         Timber.e(it, "Voice recognition failed")
@@ -182,25 +183,47 @@ class VoiceInputManager(override val di: DI) : DIAware {
             }
     }
 
-    /** Commits the pending transcription. */
-    fun confirm() {
-        val text = pendingText
-        pendingText = ""
+    /**
+     * Inserts [text] straight into the editor and keeps the card around for a
+     * moment so it can be undone or re-recorded.
+     */
+    private fun insertAndOfferUndo(text: String, current: Int) {
+        service.commitText(text)
+        committedText = text
+        _state.value = VoiceUiState.Committed(text)
+        autoHideJob?.cancel()
+        autoHideJob =
+            service.lifecycleScope.launch {
+                delay(COMMIT_UNDO_WINDOW_MS)
+                if (current == generation) dismissCard()
+            }
+    }
+
+    /** Removes the transcript inserted by the last session, when it is still there. */
+    fun undo() {
+        val text = committedText
+        committedText = ""
         if (text.isNotEmpty()) {
-            // commitText finishes the composing text as-is when it equals the
-            // composing string, so the text stays in the editor untouched.
-            service.commitText(text)
+            service.deleteCommittedTextIfPresent(text)
         }
         close()
     }
 
-    /** Discards the pending transcription and closes the dialog. */
+    /** Discards the session and closes the dialog. */
     fun cancel() {
         close()
     }
 
-    /** Discards the current take and starts a new one, keeping the dialog open. */
+    /**
+     * Drops the last transcript and starts a new take, so the new one replaces
+     * it instead of being appended.
+     */
     fun retry() {
+        val text = committedText
+        committedText = ""
+        if (text.isNotEmpty()) {
+            service.deleteCommittedTextIfPresent(text)
+        }
         releaseSession()
         start()
     }
@@ -217,9 +240,20 @@ class VoiceInputManager(override val di: DI) : DIAware {
         generation++
         job?.cancel()
         job = null
+        autoHideJob?.cancel()
+        autoHideJob = null
         recorder.cancel()
-        clearPendingComposing()
+        committedText = ""
         _state.value = VoiceUiState.Idle
+    }
+
+    /** Hides the card, leaving the inserted text in the editor. */
+    private fun dismissCard() {
+        autoHideJob = null
+        committedText = ""
+        _state.value = VoiceUiState.Idle
+        inputDialog?.dismiss()
+        inputDialog = null
     }
 
     /** Releases the recognizer, e.g. when the input method is destroyed. */
@@ -228,17 +262,15 @@ class VoiceInputManager(override val di: DI) : DIAware {
         engine.release()
     }
 
-    private fun clearPendingComposing() {
-        if (pendingText.isNotEmpty()) {
-            service.updateComposingText("")
-            pendingText = ""
-        }
-    }
-
     private fun fail(
         stringRes: Int,
         vararg args: Any,
     ) {
         _state.value = VoiceUiState.Failure(context.getString(stringRes, *args))
+    }
+
+    private companion object {
+        /** How long the inserted transcript can still be undone. */
+        const val COMMIT_UNDO_WINDOW_MS = 6_000L
     }
 }
