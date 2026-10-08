@@ -105,7 +105,7 @@ class VoiceInputDialog(
     }
 
     private fun buildContentView(): View {
-        val cardColor = colors.backColor
+        val cardColor = colors.keyboardBackColor
         val cardBackground =
             GradientDrawable().apply {
                 setColor(cardColor)
@@ -138,7 +138,7 @@ class VoiceInputDialog(
 
         pendingView =
             TextView(context).apply {
-                setTextColor(colors.hilitedCandidateTextColor)
+                setTextColor(colors.candidateTextColor)
                 textSize = 20f
                 gravity = Gravity.CENTER
                 setTextIsSelectable(true)
