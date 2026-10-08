@@ -283,6 +283,7 @@
     <string name="voice_retry">Retry</string>
     <string name="voice_permission_needed">Microphone permission is required for local voice input</string>
     <string name="voice_no_model">No voice model installed, please import one in settings</string>
+    <string name="voice_unsupported_abi">Local voice input is not supported on this device architecture</string>
     <string name="voice_empty_result">No speech detected</string>
     <string name="voice_recognition_failed">Recognition failed: %1$s</string>
     <string name="voice_import_pending">Importing…</string>

@@ -85,6 +85,9 @@ class VoiceInputManager(override val di: DI) : DIAware {
 
     fun selectedModel(): VoiceModel? = VoiceModelManager.findModel(prefs.voice.modelId.getValue())
 
+    /** Whether the on-device recogniser can run on this device. */
+    val isSupported: Boolean get() = engine.isSupported
+
     /** Attaches the voice panel to the keyboard area. */
     fun open() {
         windowManager.attachWindow(VoicePanelWindow(di))
@@ -93,6 +96,11 @@ class VoiceInputManager(override val di: DI) : DIAware {
     /** Starts a new recording session, loading the recognizer if needed. */
     fun start() {
         if (recorder.isRecording) return
+
+        if (!isSupported) {
+            fail(R.string.voice_unsupported_abi)
+            return
+        }
 
         if (!hasPermission()) {
             fail(R.string.voice_permission_needed)

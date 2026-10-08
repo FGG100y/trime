@@ -18,6 +18,15 @@ interface AsrEngine {
     val sampleRate: Int get() = 16_000
 
     /**
+     * Whether this engine can run on the current device.
+     *
+     * Implementations whose native libraries are only packaged for a subset of
+     * ABIs return `false` when the device is not one of them, so callers can
+     * report it instead of failing while loading the model.
+     */
+    val isSupported: Boolean get() = true
+
+    /**
      * Loads (or reuses) the recognizer for [model]. Cheap to call repeatedly
      * with the same model: implementations should cache the loaded model.
      *

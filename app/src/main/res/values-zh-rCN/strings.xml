@@ -282,6 +282,7 @@
     <string name="voice_retry">重录</string>
     <string name="voice_permission_needed">本地语音输入需要麦克风权限</string>
     <string name="voice_no_model">尚未安装语音模型，请先在设置中导入</string>
+    <string name="voice_unsupported_abi">当前设备架构不支持本地语音输入</string>
     <string name="voice_empty_result">未检测到语音</string>
     <string name="voice_recognition_failed">识别失败：%1$s</string>
     <string name="voice_import_pending">正在导入……</string>

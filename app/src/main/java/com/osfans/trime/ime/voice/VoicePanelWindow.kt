@@ -150,7 +150,7 @@ class VoicePanelWindow(override val di: DI) :
         }
 
         manager.start()
-        if (!manager.hasPermission()) launchPermissionActivity()
+        if (manager.isSupported && !manager.hasPermission()) launchPermissionActivity()
     }
 
     override fun onDetached() {

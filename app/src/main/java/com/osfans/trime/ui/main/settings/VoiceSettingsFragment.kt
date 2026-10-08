@@ -66,6 +66,16 @@ class VoiceSettingsFragment : PreferenceDelegateFragment(AppPrefs.defaultInstanc
                 addPreference(R.string.voice_model_delete) { confirmDelete(selected.name) }
             }
         }
+
+        // Also surface the long-press-space trigger on this page, next to the
+        // model settings, since it is what opens the local recogniser. Reuse
+        // the widget the general settings page declares for the same key.
+        val triggerUi =
+            AppPrefs.defaultInstance().general.preferenceDelegatesUi
+                .firstOrNull { it.key == AppPrefs.General.VOICE_INPUT_MODE }
+        if (triggerUi != null) {
+            screen.addPreference(triggerUi.createUi(requireContext()))
+        }
     }
 
     private fun createModelListPreference(

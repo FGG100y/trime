@@ -283,6 +283,7 @@
     <string name="voice_retry">重錄</string>
     <string name="voice_permission_needed">本機語音輸入需要麥克風權限</string>
     <string name="voice_no_model">尚未安裝語音模型，請先在設定中匯入</string>
+    <string name="voice_unsupported_abi">當前裝置架構不支援本地語音輸入</string>
     <string name="voice_empty_result">未偵測到語音</string>
     <string name="voice_recognition_failed">辨識失敗：%1$s</string>
     <string name="voice_import_pending">正在匯入……</string>

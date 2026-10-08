@@ -6,6 +6,7 @@
 
 package com.osfans.trime.data.voice
 
+import android.os.Build
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineParaformerModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
@@ -26,6 +27,9 @@ import java.io.File
 class SherpaOnnxEngine : AsrEngine {
     private var recognizer: OfflineRecognizer? = null
     private var loadedKey: String? = null
+
+    override val isSupported: Boolean
+        get() = Build.SUPPORTED_ABIS.any { it in PACKAGED_ABIS }
 
     override fun load(model: VoiceModel, language: String) {
         val key = "${model.id}:$language"
@@ -117,5 +121,10 @@ class SherpaOnnxEngine : AsrEngine {
         }
 
         return OfflineRecognizerConfig(modelConfig = modelConfig)
+    }
+
+    private companion object {
+        /** ABIs the native libraries are packaged for by default. */
+        val PACKAGED_ABIS = setOf("arm64-v8a")
     }
 }
