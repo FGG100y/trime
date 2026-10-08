@@ -61,7 +61,10 @@ class ThemePrefs(
         switch(
             R.string.follow_system_day_night_color,
             FOLLOW_SYSTEM_DAY_NIGHT,
-            false,
+            // Default on: a scheme that links a light and a dark variant (e.g.
+            // tongwenfeng's default/steam) then follows the system for free,
+            // while schemes without links ignore it and keep the user's choice.
+            true,
         )
 
     companion object {
