@@ -66,18 +66,44 @@ a generated `voice-model.json` manifest. Supported sherpa-onnx offline layouts:
 
 | Type | Files | Notes |
 | --- | --- | --- |
-| SenseVoice | `model.int8.onnx` + `tokens.txt` | **Recommended**: good Chinese, fast, multilingual |
+| SenseVoice | `model.int8.onnx` + `tokens.txt` | **Recommended**: good Chinese, fast, multilingual; punctuates when ITN is on |
 | Paraformer | `model.int8.onnx` + `tokens.txt` | Chinese |
-| Whisper | `*-encoder.onnx` + `*-decoder.onnx` + `tokens.txt` | Multilingual, larger/slower |
-| Transducer | `encoder*.onnx` + `decoder*.onnx` + `joiner*.onnx` + `tokens.txt` | `zipformer` etc. |
+| Whisper | `*-encoder.onnx` + `*-decoder.onnx` + `tokens.txt` | Multilingual, larger/slower, punctuates natively |
+| Transducer | `encoder*.onnx` + `decoder*.onnx` + `joiner*.onnx` + `tokens.txt` | `zipformer` etc.; X-ASR punctuates and cases natively |
 | Zipformer CTC | `model*.onnx` + `tokens.txt` | |
 
-A good starting point is
-`sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09` (about 160 MB compressed,
-~230 MB on disk) from the
-[sherpa-onnx model releases](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models).
-Unzip it somewhere, then import that folder from *Settings → Local voice input →
-Import model*.
+To add one, unzip a release and pick its folder from *Settings → Local voice
+input → Import model*. The folder **name** is part of the detection, so keep the
+release name.
+
+### Recommended models
+
+| | Download | Size | Languages | Punctuation |
+| --- | --- | --- | --- | --- |
+| **SenseVoiceSmall** (default) | [`sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17`](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2) | ~230 MB | zh, en, ja, ko, yue | yes |
+| **X-ASR** (Chinese + English mixed) | [`sherpa-onnx-x-asr-zipformer-transducer-zh-en-punct-int8-2026-06-03`](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-zipformer-transducer-zh-en-punct-int8-2026-06-03.tar.bz2) | ~168 MB | zh, en | yes, plus casing |
+
+### Punctuation
+
+SenseVoice only emits punctuation (and Arabic digits) when inverse text
+normalization is on. The engine always sets
+`useInverseTextNormalization = true`, so an official SenseVoiceSmall model
+punctuates out of the box: `开饭时间早上9点至下午5点。`.
+
+The sherpa-onnx release names are easy to misread: several of the newer ones are
+**dialect finetunes**, not newer versions of the same model.
+
+- `…sense-voice-…-int8-2025-09-09` is the WSYue **Cantonese** finetune. It is a
+  little better on Cantonese, but it emits **no punctuation at all**.
+- `…paraformer-zh-int8-2025-10-07` is a **Sichuanese** finetune.
+
+Whisper, X-ASR and the other models marked above punctuate natively. FireRedASR2
+and the large CTC/transducer models do not, and would need the separate
+CT-Transformer punctuation model as a post-processing step (not implemented).
+
+Only **offline** models work. Folders whose name contains `streaming` (for
+example `sherpa-onnx-x-asr-480ms-streaming-…`) are rejected at import time,
+because the app only drives sherpa-onnx's offline recognizer.
 
 ### Baseline
 
@@ -90,6 +116,7 @@ Import model*.
 data/voice/
   VoiceModel.kt             model metadata (@Serializable)
   VoiceModelManager.kt      import from SAF tree, list, delete
+  VoiceModelDetector.kt     model type detection from folder name and files
   AsrEngine.kt              engine interface (load / recognize / release)
   SherpaOnnxEngine.kt       sherpa-onnx OfflineRecognizer implementation
 ime/voice/
@@ -155,7 +182,8 @@ models live in app-private storage and are imported through SAF.
 ## Testing checklist
 
 1. `script/fetch-sherpa-onnx.sh`, then build.
-2. Import `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09`.
+2. Import `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17` (or the
+   X-ASR release) and check that the transcript is punctuated.
 3. Set *Long press space* to *Local voice input*.
 4. Long press space, speak, stop, confirm. Check the text lands in the editor.
 5. Cancel and retry paths, and switching app while recording.
@@ -168,4 +196,5 @@ models live in app-private storage and are imported through SAF.
 - Silero VAD to auto-stop on silence.
 - Build sherpa-onnx/onnxruntime from source for F-Droid.
 - Hotword / replacement dictionaries.
-- Optional punctuation restoration models.
+- Optional punctuation restoration models (CT-Transformer) for models that do
+  not punctuate natively, such as FireRedASR2.
