@@ -49,6 +49,7 @@ class AppPrefs(
     val keyboard = Keyboard(shared).register()
     val candidates = Candidates(shared).register()
     val clipboard = Clipboard(shared).register()
+    val voice = Voice(shared).register()
     val advanced = Advanced(shared).register()
 
     @Keep
@@ -99,11 +100,21 @@ class AppPrefs(
             const val ASCII_SWITCH_TIPS = "ascii_switch_tips"
             const val INLINE_SUGGESTIONS = "inline_suggestions"
             const val PREFERRED_VOICE_INPUT = "preferred_voice_input"
+            const val VOICE_INPUT_MODE = "voice_input_mode"
+        }
+
+        enum class VoiceInputMode(override val stringRes: Int) : PreferenceDelegateEnum {
+            OFF(R.string.voice_input_mode__off),
+            LOCAL(R.string.voice_input_mode__local),
+            EXTERNAL(R.string.voice_input_mode__external),
         }
 
         val inlinePreeditMode = enum(R.string.inline_preedit_mode, INLINE_PREEDIT_MODE, InlinePreeditMode.DISABLE)
         val asciiSwitchTips = switch(R.string.ascii_switch_tips, ASCII_SWITCH_TIPS, true)
         val inlineSuggestions = switch(R.string.inline_suggestions, INLINE_SUGGESTIONS, true)
+
+        /** What the space key's long press should do. */
+        val voiceInputMode = enum(R.string.voice_input_mode, VOICE_INPUT_MODE, VoiceInputMode.EXTERNAL)
 
         val preferredVoiceInput = list(
             R.string.preferred_voice_input,
@@ -114,6 +125,39 @@ class AppPrefs(
                 InputMethodUtils.voiceInputMethods().map { it.first.loadLabel(ctx.packageManager) }
             },
         )
+    }
+
+    /**
+     *  Wrapper class of local (on-device) voice input settings.
+     */
+    class Voice(
+        shared: SharedPreferences,
+    ) : PreferenceDelegateOwner(shared, R.string.voice_input) {
+        companion object {
+            const val ENGINE_TYPE = "voice_engine_type"
+            const val MODEL_ID = "voice_model_id"
+            const val LANGUAGE = "voice_language"
+        }
+
+        enum class EngineType(override val stringRes: Int) : PreferenceDelegateEnum {
+            SHERPA_ONNX(R.string.voice_engine__sherpa_onnx),
+        }
+
+        enum class Language(override val stringRes: Int) : PreferenceDelegateEnum {
+            AUTO(R.string.voice_language__auto),
+            ZH(R.string.voice_language__zh),
+            EN(R.string.voice_language__en),
+            JA(R.string.voice_language__ja),
+            KO(R.string.voice_language__ko),
+            YUE(R.string.voice_language__yue),
+        }
+
+        val engineType = enum(R.string.voice_engine_type, ENGINE_TYPE, EngineType.SHERPA_ONNX)
+
+        /** Id of the selected [com.osfans.trime.data.voice.VoiceModel], empty when none. */
+        val modelId = string(MODEL_ID, "")
+
+        val language = enum(R.string.voice_language, LANGUAGE, Language.AUTO)
     }
 
     /**

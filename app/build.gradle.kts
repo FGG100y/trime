@@ -167,6 +167,10 @@ dependencies {
         artifact { type = "aar" }
     }
 
+    // Local (offline) voice input. The jar and its native libraries are
+    // fetched by script/fetch-sherpa-onnx.sh, see doc/voice-input.md.
+    implementation(files("libs/sherpa-onnx.jar"))
+
     // Testing
     testImplementation(libs.junit)
     testImplementation(libs.kotest.runner.junit5)

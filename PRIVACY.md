@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: 2015 - 2024 Rime community
+SPDX-FileCopyrightText: 2015 - 2026 Rime community
 
 SPDX-License-Identifier: GPL-3.0-or-later
 -->
@@ -12,9 +12,13 @@ SPDX-License-Identifier: GPL-3.0-or-later
 讀取如下資訊和權限：
 
 * 存儲空間：用於保存用戶詞典數據和配置信息。
-* 麥克風：用於系統語音輸入，如不需要可關閉。
+* 麥克風：用於可選的本機語音輸入（或切換至系統語音輸入法）。
 
-2017年7月25日更新
+本機語音輸入完全在裝置端執行：音訊不會離開裝置，識別所需的模型由使用者自行匯入，
+應用不需要 `INTERNET` 權限。若使用「系統語音輸入法」選項，則由使用者所選的輸入法處理音訊，
+其隱私策略不受同文控制。
+
+2017年7月25日更新，2026年修訂
 
 ## Privacy Policy
 
@@ -24,6 +28,13 @@ It won't collect or upload any user's privacy to any external service or server 
 Permissions application needs:
 
 * Storage(NEED): Used to keep the dictionary data and configuration file.
-* Microphone(OPTIONAL): Used for voice input. 
+* Microphone(OPTIONAL): Used for the optional, fully on-device voice input (or for
+  switching to the system voice input method).
 
-Updated on 2017.7.25
+The local voice input runs entirely on device: audio never leaves the device, the
+recognition model is imported by the user, and the app does not request the
+`INTERNET` permission. When the "system voice input method" option is used, the
+audio is handled by whichever input method the user selected, whose privacy
+policy is outside Trime's control.
+
+Updated on 2017.7.25, revised 2026

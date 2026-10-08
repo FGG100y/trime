@@ -11,6 +11,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Only used by the optional, fully on-device voice input. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:name="com.osfans.trime.TrimeApplication"
@@ -80,6 +82,13 @@ SPDX-License-Identifier: GPL-3.0-or-later
         <activity
             android:name=".ui.setup.SetupActivity"
             android:exported="false" />
+
+        <activity
+            android:name=".ui.voice.VoicePermissionActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:theme="@style/Theme.DialogTheme" />
 
         <activity
             android:name=".ui.main.LogActivity"

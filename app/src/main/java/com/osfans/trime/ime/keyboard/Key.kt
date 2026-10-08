@@ -49,6 +49,16 @@ class Key(
         bind(KeyBehavior.PAGING, keyDef.paging)
         bind(KeyBehavior.COMBO, keyDef.combo)
         bind(KeyBehavior.ASCII, keyDef.ascii)
+
+        // The space bar doubles as the voice-input trigger: when the theme does
+        // not bind a long-press action to it, add one here so that the gesture
+        // layer actually detects a long press and dispatches it. What the
+        // action does (local recogniser, system voice IME or nothing) is decided
+        // later by the voiceInputMode preference.
+        val isSpace = keyDef.click.orAbsent?.let { theme.resolveAction(it).code } == KeyEvent.KEYCODE_SPACE
+        if (KeyBehavior.LONG_CLICK !in this && isSpace) {
+            put(KeyBehavior.LONG_CLICK, theme.resolveAction(VOICE_ASSIST_ACTION))
+        }
     }
 
     var edgeFlags = 0
@@ -283,6 +293,11 @@ class Key(
     }
 
     private fun checkKeyAction(sendBindings: Boolean): KeyAction? = checkKeyAction().takeIf { sendBindings }
+
+    companion object {
+        /** Preset action name used by the long-press-space voice-input trigger. */
+        private const val VOICE_ASSIST_ACTION = "VOICE_ASSIST"
+    }
 
     val code: Int
         get() = click?.code ?: KeyEvent.KEYCODE_UNKNOWN

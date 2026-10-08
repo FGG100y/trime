@@ -36,6 +36,7 @@ import com.osfans.trime.ime.keyboard.KeyboardPrefs.isLandscapeMode
 import com.osfans.trime.ime.keyboard.KeyboardWindow
 import com.osfans.trime.ime.popup.PopupDelegate
 import com.osfans.trime.ime.symbol.LiquidWindow
+import com.osfans.trime.ime.voice.VoiceInputManager
 import com.osfans.trime.ime.window.BoardWindowManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -118,6 +119,7 @@ class InputView(
         bindSingleton { CompactCandidateDelegate(di) }
         bindSingleton { KeyboardWindow(di) }
         bindSingleton { LiquidWindow(di) }
+        bindSingleton { VoiceInputManager(di) }
     }
 
     private val broadcaster: InputBroadcaster by instance()

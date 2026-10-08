@@ -27,6 +27,7 @@ import com.osfans.trime.ime.core.TrimeInputMethodService
 import com.osfans.trime.ime.dialog.EnabledSchemaPickerDialog
 import com.osfans.trime.ime.switches.SwitchOptionWindow
 import com.osfans.trime.ime.symbol.LiquidWindow
+import com.osfans.trime.ime.voice.VoiceInputManager
 import com.osfans.trime.ime.window.BoardWindowManager
 import com.osfans.trime.ui.main.settings.ColorPickerDialog
 import com.osfans.trime.ui.main.settings.SoundEffectPickerDialog
@@ -55,6 +56,7 @@ class CommonKeyboardActionListener(override val di: DI) : DIAware {
     private val windowManager: BoardWindowManager by instance()
     private val keyboardWindow: KeyboardWindow by instance()
     private val liquidWindow: LiquidWindow by instance()
+    private val voiceInputManager: VoiceInputManager by instance()
 
     private val prefs = AppPrefs.defaultInstance()
 
@@ -143,7 +145,7 @@ class CommonKeyboardActionListener(override val di: DI) : DIAware {
                         KeyEvent.KEYCODE_SETTINGS -> handleSettings(action)
                         KeyEvent.KEYCODE_PROG_RED -> showColorPicker()
                         KeyEvent.KEYCODE_MENU -> showEnabledSchemaPicker()
-                        KeyEvent.KEYCODE_VOICE_ASSIST -> switchToVoiceInputMethod()
+                        KeyEvent.KEYCODE_VOICE_ASSIST -> handleVoiceAssist()
                         else -> handleDefaultKeyAction(action)
                     }
                 }
@@ -317,6 +319,14 @@ class CommonKeyboardActionListener(override val di: DI) : DIAware {
                     "schema" -> AppUtils.launchMainToSchemaList(context)
                     "sound" -> showSoundEffectPicker()
                     else -> AppUtils.launchMainActivity(service)
+                }
+            }
+
+            private fun handleVoiceAssist() {
+                when (prefs.general.voiceInputMode.getValue()) {
+                    AppPrefs.General.VoiceInputMode.LOCAL -> voiceInputManager.open()
+                    AppPrefs.General.VoiceInputMode.EXTERNAL -> switchToVoiceInputMethod()
+                    AppPrefs.General.VoiceInputMode.OFF -> Unit
                 }
             }
 
