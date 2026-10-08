@@ -60,7 +60,7 @@ object VoiceModelManager {
         }
 
         val fileNames = documents.map { it.name }
-        val candidate = detect(displayName, fileNames)
+        val candidate = detectVoiceModel(displayName, fileNames)
 
         val baseId = sanitize(displayName).ifEmpty { "model" }
         val targetDir = uniqueDir(baseId)
@@ -105,83 +105,6 @@ object VoiceModelManager {
     }
 
     private fun sanitize(name: String): String = name.replace(Regex("[^A-Za-z0-9._-]"), "_")
-
-    /**
-     * Best-effort detection of the model type from the folder name and the
-     * files inside it. A wrong guess only affects which files are wired into
-     * the sherpa-onnx config; the user can delete and re-import.
-     */
-    private fun detect(dirName: String, files: List<String>): VoiceModel {
-        val onnx = files.filter { it.endsWith(".onnx", ignoreCase = true) }
-        if (onnx.isEmpty()) {
-            throw IllegalArgumentException("no .onnx model found")
-        }
-        val tokens = files.firstOrNull { it.contains("tokens", ignoreCase = true) }
-
-        val encoder = choose(onnx, "encoder")
-        val decoder = choose(onnx, "decoder")
-        val joiner = choose(onnx, "joiner")
-
-        val lowerName = dirName.lowercase()
-        return when {
-            joiner != null -> VoiceModel(
-                id = "",
-                name = dirName,
-                type = VoiceModelType.TRANSDUCER,
-                tokens = tokens.orEmpty(),
-                encoder = encoder.orEmpty(),
-                decoder = decoder ?: "",
-                joiner = joiner,
-            )
-
-            encoder != null && decoder != null && lowerName.contains("whisper") ->
-                VoiceModel(
-                    id = "",
-                    name = dirName,
-                    type = VoiceModelType.WHISPER,
-                    tokens = tokens.orEmpty(),
-                    encoder = encoder,
-                    decoder = decoder,
-                )
-
-            lowerName.contains("paraformer") -> VoiceModel(
-                id = "",
-                name = dirName,
-                type = VoiceModelType.PARAFORMER,
-                model = choose(onnx, "model") ?: onnx.first(),
-                tokens = requireTokens(tokens),
-            )
-
-            lowerName.contains("zipformer") && lowerName.contains("ctc") -> VoiceModel(
-                id = "",
-                name = dirName,
-                type = VoiceModelType.ZIPFORMER_CTC,
-                model = choose(onnx, "model") ?: onnx.first(),
-                tokens = requireTokens(tokens),
-            )
-
-            else -> VoiceModel(
-                id = "",
-                name = dirName,
-                type = VoiceModelType.SENSE_VOICE,
-                model = choose(onnx, "model") ?: onnx.first(),
-                tokens = requireTokens(tokens),
-            )
-        }
-    }
-
-    private fun requireTokens(tokens: String?): String = tokens ?: throw IllegalArgumentException("tokens.txt not found")
-
-    /** Picks the best matching onnx file, preferring int8/fp16 quantizations. */
-    private fun choose(onnx: List<String>, keyword: String): String? = onnx
-        .filter { it.contains(keyword, ignoreCase = true) }
-        .minByOrNull { name ->
-            when {
-                name.contains("int8", ignoreCase = true) -> 0
-                name.contains("fp16", ignoreCase = true) -> 1
-                else -> 2
-            }
-        }
 
     private data class Document(
         val uri: Uri,
