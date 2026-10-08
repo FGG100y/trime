@@ -290,7 +290,15 @@ class KeyView(
             drawLabel(canvas, label)
         }
 
-        val symbol = key.symbolLabel
+        // While the space bar's long press runs the voice input, do not
+        // advertise the action the theme bound to it (usually a language or
+        // keyboard switch) and show a microphone instead.
+        val symbol =
+            if (key.code == KeyEvent.KEYCODE_SPACE && voiceInputTriggeredOnSpace()) {
+                VOICE_SPACE_SYMBOL
+            } else {
+                key.symbolLabel
+            }
         if (symbol.isNotEmpty()) {
             drawSymbol(canvas, symbol)
         }
@@ -420,3 +428,6 @@ class KeyView(
         }
     }
 }
+
+/** Icon font name shown on the space bar while its long press runs voice input. */
+private const val VOICE_SPACE_SYMBOL = "ic@microphone"

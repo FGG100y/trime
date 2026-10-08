@@ -170,6 +170,10 @@ thing to regression-test.
 *General → Long press space* (also shown on the *Local voice input* page): `Disabled` / `Local voice input` / `System voice
 input method` (default, preserves the old behaviour).
 
+While either voice option is selected, the space bar shows a microphone
+symbol; the label the theme binds to its own long press (usually a language or
+keyboard switch) would otherwise advertise an action that no longer runs.
+
 *Settings → Local voice input*:
 - Engine (currently only sherpa-onnx)
 - Model (the imported models)
