@@ -216,8 +216,9 @@ models live in app-private storage and are imported through SAF.
 
 ## Future work
 
-- Streaming recognizers for live partial text.
-- Silero VAD to auto-stop on silence.
+- Streaming / live partial text: surveyed and deferred, see
+  [voice-input-todo.md](voice-input-todo.md).
+- Silero VAD for segmentation (pseudo-streaming) and auto-stop on silence.
 - Build sherpa-onnx/onnxruntime from source for F-Droid.
 - Hotword / replacement dictionaries.
 - Optional punctuation restoration models (CT-Transformer) for models that do
