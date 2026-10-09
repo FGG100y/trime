@@ -51,10 +51,9 @@ object VoiceModelManager {
 
     fun findModel(id: String): VoiceModel? = listModels().firstOrNull { it.id == id }
 
-    fun deleteModel(model: VoiceModel): Boolean =
-        modelDir(model.id).deleteRecursively().also {
-            if (it) cachedModels = null
-        }
+    fun deleteModel(model: VoiceModel): Boolean = modelDir(model.id).deleteRecursively().also {
+        if (it) cachedModels = null
+    }
 
     /**
      * Copies every file found in the picked document tree into the app-private
