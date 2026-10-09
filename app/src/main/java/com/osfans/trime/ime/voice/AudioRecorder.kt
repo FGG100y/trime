@@ -32,8 +32,14 @@ class AudioRecorder(
 
     private var audioRecord: AudioRecord? = null
     private var worker: Thread? = null
-    private val samples = ArrayList<Float>(sampleRate * 16)
     private val lock = Any()
+
+    // A growable primitive buffer. An ArrayList<Float> boxes every sample,
+    // allocating ~16k objects per second, which is pure GC pressure; a plain
+    // FloatArray keeps the capture allocation-free after the initial growth.
+    private var samples = FloatArray(sampleRate * 4)
+    private var sampleCount = 0
+    private val maxSamples = sampleRate * MAX_RECORDING_SECONDS
 
     @Volatile
     private var recording = false
@@ -70,24 +76,53 @@ class AudioRecorder(
             return false
         }
 
-        synchronized(lock) { samples.clear() }
+        synchronized(lock) { sampleCount = 0 }
         audioRecord = record
+        try {
+            record.startRecording()
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to start AudioRecord")
+            record.release()
+            audioRecord = null
+            return false
+        }
+        if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            Timber.e("AudioRecord did not enter the recording state")
+            record.release()
+            audioRecord = null
+            return false
+        }
         recording = true
-        record.startRecording()
         worker = Thread({ readLoop(record) }, "trime-voice-recorder").apply { start() }
         return true
+    }
+
+    /** Appends one sample, growing the buffer geometrically up to [maxSamples]. */
+    private fun append(value: Float) {
+        if (sampleCount >= maxSamples) return
+        if (sampleCount == samples.size) {
+            samples = samples.copyOf(minOf(samples.size * 2, maxSamples))
+        }
+        samples[sampleCount++] = value
     }
 
     private fun readLoop(record: AudioRecord) {
         val buffer = ShortArray(1024)
         while (recording) {
             val read = record.read(buffer, 0, buffer.size)
-            if (read <= 0) continue
+            if (read < 0) {
+                // A negative result is returned immediately (dead object,
+                // invalid state, ...); continuing would spin the CPU. Stop the
+                // loop and let stop() release the AudioRecord.
+                Timber.e("AudioRecord read failed with error %d", read)
+                break
+            }
+            if (read == 0) continue
             var sum = 0.0
             synchronized(lock) {
                 for (i in 0 until read) {
                     val value = buffer[i] / 32768f
-                    samples.add(value)
+                    append(value)
                     sum += value.toDouble() * value.toDouble()
                 }
             }
@@ -107,12 +142,21 @@ class AudioRecorder(
         }
         audioRecord = null
         _amplitude.value = 0f
-        return synchronized(lock) { samples.toFloatArray() }
+        return synchronized(lock) {
+            val result = samples.copyOf(sampleCount)
+            sampleCount = 0
+            result
+        }
     }
 
     /** Stops the capture and discards the buffered audio. */
     fun cancel() {
         stop()
-        synchronized(lock) { samples.clear() }
+        synchronized(lock) { sampleCount = 0 }
+    }
+
+    private companion object {
+        /** Hard cap on one recording (~60 s), a safety net if a session is lost. */
+        const val MAX_RECORDING_SECONDS = 60
     }
 }

@@ -321,6 +321,7 @@ open class TrimeInputMethodService : LifecycleInputMethodService() {
 
     override fun onDestroy() {
         InputFeedbackManager.destroy()
+        inputView?.releaseVoiceInput()
         inputView = null
         recreateInputViewPrefs.forEach {
             it.unregisterOnChangeListener(recreateInputViewListener)
@@ -593,6 +594,7 @@ open class TrimeInputMethodService : LifecycleInputMethodService() {
     override fun onFinishInputView(finishingInput: Boolean) {
         Timber.d("onFinishInputView: finishingInput=$finishingInput")
         decorLocationUpdated = false
+        inputView?.finishVoiceInput()
         inputView?.dismissCandidateActionMenu()
         candidatesView?.dismissCandidateActionMenu()
         inputDeviceManager.onFinishInputView()
@@ -605,6 +607,17 @@ open class TrimeInputMethodService : LifecycleInputMethodService() {
             clearComposition()
         }
         InputFeedbackManager.finishInput()
+    }
+
+    /**
+     * Stops voice input whenever the IME window is hidden (Home, app switch,
+     * another IME, ...), which is the earliest reliable signal that the user
+     * left the keyboard. Depending on the device, [onFinishInputView] may only
+     * arrive later or not at all in these cases.
+     */
+    override fun onWindowHidden() {
+        inputView?.finishVoiceInput()
+        super.onWindowHidden()
     }
 
     fun commitText(text: String) {
@@ -1015,6 +1028,7 @@ open class TrimeInputMethodService : LifecycleInputMethodService() {
     fun showDialog(
         dialog: Dialog,
         floating: Boolean = false,
+        onDismiss: (() -> Unit)? = null,
     ) {
         showingDialog?.dismiss()
         dialog.window?.also { window ->
@@ -1040,6 +1054,7 @@ open class TrimeInputMethodService : LifecycleInputMethodService() {
         }
         dialog.setOnDismissListener {
             showingDialog = null
+            onDismiss?.invoke()
         }
         dialog.show()
         showingDialog = dialog

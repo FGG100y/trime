@@ -77,6 +77,7 @@ class VoiceInputManager(override val di: DI) : DIAware {
 
     private var job: Job? = null
     private var autoHideJob: Job? = null
+    private var maxDurationJob: Job? = null
     private var inputDialog: VoiceInputDialog? = null
 
     /** Bumped on every new session so stale background results are ignored. */
@@ -99,8 +100,12 @@ class VoiceInputManager(override val di: DI) : DIAware {
         dialog.show()
     }
 
-    /** Called when the dialog is dismissed by the user (back or an outside tap). */
-    fun onDialogCancelled() {
+    /**
+     * Called when the banner was dismissed without going through [close], for
+     * example when another dialog replaced it. Releases the session so the
+     * microphone is not left capturing in the background.
+     */
+    fun onDialogDismissed() {
         releaseSession()
         inputDialog = null
     }
@@ -144,6 +149,12 @@ class VoiceInputManager(override val di: DI) : DIAware {
 
                 if (recorder.start()) {
                     _state.value = VoiceUiState.Recording
+                    maxDurationJob?.cancel()
+                    maxDurationJob =
+                        service.lifecycleScope.launch {
+                            delay(MAX_RECORDING_MS)
+                            if (current == generation && recorder.isRecording) stopAndRecognize()
+                        }
                 } else {
                     fail(R.string.voice_recognition_failed, "AudioRecord init failed")
                 }
@@ -154,6 +165,8 @@ class VoiceInputManager(override val di: DI) : DIAware {
     fun stopAndRecognize() {
         if (!recorder.isRecording) return
 
+        maxDurationJob?.cancel()
+        maxDurationJob = null
         val samples = recorder.stop()
         if (samples.size < engine.sampleRate / 4) {
             fail(R.string.voice_empty_result)
@@ -242,6 +255,8 @@ class VoiceInputManager(override val di: DI) : DIAware {
         job = null
         autoHideJob?.cancel()
         autoHideJob = null
+        maxDurationJob?.cancel()
+        maxDurationJob = null
         recorder.cancel()
         committedText = ""
         _state.value = VoiceUiState.Idle
@@ -272,5 +287,8 @@ class VoiceInputManager(override val di: DI) : DIAware {
     private companion object {
         /** How long the inserted transcript can still be undone. */
         const val COMMIT_UNDO_WINDOW_MS = 6_000L
+
+        /** Longest single recording; mirrors the recorder's own hard cap. */
+        const val MAX_RECORDING_MS = 60_000L
     }
 }

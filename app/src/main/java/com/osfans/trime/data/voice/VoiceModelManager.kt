@@ -33,9 +33,17 @@ object VoiceModelManager {
     val rootDir: File
         get() = File(appContext.filesDir, "voice/models")
 
+    // The IME looks the models up on the main thread (to build the banner), so
+    // the directory scan and manifest parsing are cached and invalidated only
+    // on import/delete instead of on every call.
+    @Volatile
+    private var cachedModels: List<VoiceModel>? = null
+
     fun modelDir(id: String): File = File(rootDir, id)
 
-    fun listModels(): List<VoiceModel> = rootDir
+    fun listModels(): List<VoiceModel> = cachedModels ?: loadModels().also { cachedModels = it }
+
+    private fun loadModels(): List<VoiceModel> = rootDir
         .listFiles { file -> file.isDirectory }
         ?.mapNotNull { dir -> readManifest(dir) }
         ?.sortedBy { it.name.lowercase() }
@@ -43,7 +51,10 @@ object VoiceModelManager {
 
     fun findModel(id: String): VoiceModel? = listModels().firstOrNull { it.id == id }
 
-    fun deleteModel(model: VoiceModel): Boolean = modelDir(model.id).deleteRecursively()
+    fun deleteModel(model: VoiceModel): Boolean =
+        modelDir(model.id).deleteRecursively().also {
+            if (it) cachedModels = null
+        }
 
     /**
      * Copies every file found in the picked document tree into the app-private
@@ -80,6 +91,7 @@ object VoiceModelManager {
 
         val model = candidate.copy(id = targetDir.name, name = displayName.ifBlank { targetDir.name })
         File(targetDir, MANIFEST_NAME).writeText(json.encodeToString(VoiceModel.serializer(), model))
+        cachedModels = null
         Timber.i("Imported voice model %s (%s)", model.name, model.type)
         return model
     }

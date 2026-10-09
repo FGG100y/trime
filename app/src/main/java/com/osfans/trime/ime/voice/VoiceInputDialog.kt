@@ -126,7 +126,6 @@ class VoiceInputDialog(
         // Rime colour scheme is light; draw the whole card ourselves instead.
         alertDialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         alertDialog.setCanceledOnTouchOutside(false)
-        alertDialog.setOnCancelListener { manager.onDialogCancelled() }
         dialog = alertDialog
 
         stateJob =
@@ -142,17 +141,33 @@ class VoiceInputDialog(
                 }
             }
 
-        service.showDialog(alertDialog, floating = true)
+        service.showDialog(
+            alertDialog,
+            floating = true,
+            onDismiss = {
+                cleanupJobs()
+                manager.onDialogDismissed()
+            },
+        )
         manager.start()
     }
 
     fun dismiss() {
+        cleanupJobs()
+        dialog?.dismiss()
+        dialog = null
+    }
+
+    /**
+     * Cancels the collectors tied to the dialog. Called both when the dialog is
+     * dismissed through [dismiss] and when it is dismissed from the outside, so
+     * the jobs never outlive the view they render into.
+     */
+    private fun cleanupJobs() {
         stateJob?.cancel()
         stateJob = null
         amplitudeJob?.cancel()
         amplitudeJob = null
-        dialog?.dismiss()
-        dialog = null
     }
 
     private fun buildContentView(): View {

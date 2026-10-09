@@ -130,6 +130,7 @@ class InputView(
     private val inputBar: InputBarDelegate by instance()
     private val keyboardWindow: KeyboardWindow by instance()
     private val liquidWindow: LiquidWindow by instance()
+    private val voiceInputManager: VoiceInputManager by instance()
 
     private val candidatesMode by AppPrefs.defaultInstance().candidates.mode
 
@@ -331,6 +332,24 @@ class InputView(
         enterKeyDisplay.updateLabelOnEditorInfo(info)
     }
 
+    /**
+     * Stops any running voice input when the input view goes away, so the
+     * microphone is not left capturing in the background.
+     */
+    fun finishVoiceInput() {
+        voiceInputManager.close()
+    }
+
+    /**
+     * Releases the voice engine's native resources. Called when this input view
+     * is discarded, so the recognizer does not stay resident across a rebuild.
+     * Keeping the model loaded while the IME is merely hidden is intentional,
+     * as reloading it is expensive.
+     */
+    fun releaseVoiceInput() {
+        voiceInputManager.release()
+    }
+
     override fun handleRimeMessage(it: RimeMessage<*>) {
         when (it) {
             is RimeMessage.SchemaMessage -> {
@@ -383,6 +402,10 @@ class InputView(
         // cancel the notification job and clear all broadcast receivers,
         // implies that InputView should not be attached again after detached.
         updateWindowViewHeightJob.cancel()
+        // The voice session owns a raw microphone thread and a native
+        // recognizer, neither of which is tied to the view tree or the service
+        // lifecycle; release them explicitly.
+        voiceInputManager.release()
         popup.root.removeAllViews()
         broadcaster.clear()
         super.onDetachedFromWindow()
