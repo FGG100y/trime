@@ -37,6 +37,7 @@ import com.osfans.trime.ime.keyboard.KeyboardWindow
 import com.osfans.trime.ime.popup.PopupDelegate
 import com.osfans.trime.ime.symbol.LiquidWindow
 import com.osfans.trime.ime.voice.VoiceInputManager
+import com.osfans.trime.ime.voice.VoiceUiState
 import com.osfans.trime.ime.window.BoardWindowManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -131,6 +132,11 @@ class InputView(
     private val keyboardWindow: KeyboardWindow by instance()
     private val liquidWindow: LiquidWindow by instance()
     private val voiceInputManager: VoiceInputManager by instance()
+
+    private var lastVoiceRecording = false
+
+    /** Whether the recorder is capturing; drives the space bar's mic highlight. */
+    val isVoiceRecording: Boolean get() = voiceInputManager.state.value is VoiceUiState.Recording
 
     private val candidatesMode by AppPrefs.defaultInstance().candidates.mode
 
@@ -247,6 +253,17 @@ class InputView(
                     }
                 }
             }
+
+        // Repaint the space bar's microphone when recording starts or stops.
+        service.lifecycleScope.launch {
+            voiceInputManager.state.collect {
+                val recording = it is VoiceUiState.Recording
+                if (recording != lastVoiceRecording) {
+                    lastVoiceRecording = recording
+                    keyboardWindow.invalidateKeys()
+                }
+            }
+        }
 
         updateKeyboardSize()
 

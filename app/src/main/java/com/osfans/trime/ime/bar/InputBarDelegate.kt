@@ -39,6 +39,8 @@ import com.osfans.trime.ime.keyboard.CommonKeyboardActionListener
 import com.osfans.trime.ime.keyboard.KeyBehavior
 import com.osfans.trime.ime.keyboard.KeyboardWindow
 import com.osfans.trime.ime.switches.SwitchOptionWindow
+import com.osfans.trime.ime.voice.VoiceInputManager
+import com.osfans.trime.ime.voice.VoiceUiState
 import com.osfans.trime.ime.window.BoardWindow
 import com.osfans.trime.ime.window.BoardWindowManager
 import com.osfans.trime.ui.main.ClipEditActivity
@@ -58,6 +60,7 @@ import splitties.views.dsl.core.lParams
 import splitties.views.dsl.core.matchParent
 import java.util.concurrent.Executor
 import kotlin.coroutines.resume
+import kotlin.math.log10
 
 class InputBarDelegate(override val di: DI) :
     DIAware,
@@ -70,6 +73,7 @@ class InputBarDelegate(override val di: DI) :
     private val commonKeyboardActionListener: CommonKeyboardActionListener by instance()
     private val candidate: CompactCandidateDelegate by instance()
     private val rime: RimeSession by instance()
+    private val voiceInputManager: VoiceInputManager by instance()
 
     val themedHeight = theme.style.run { candidateViewHeight + commentHeight }
 
@@ -85,6 +89,12 @@ class InputBarDelegate(override val di: DI) :
 
     private var isClipboardFresh: Boolean = false
     private var isInlineSuggestionPresent: Boolean = false
+
+    /** True while a voice session owns the bar, so it can be forced visible. */
+    private var isVoiceSessionActive: Boolean = false
+
+    /** Smoothed 0..1 microphone level, so the meter has a fast attack, slow release. */
+    private var smoothedVoiceLevel = 0f
 
     @Keep
     private val onClipboardUpdateListener = ClipboardHelper.OnClipboardUpdateListener {
@@ -116,12 +126,71 @@ class InputBarDelegate(override val di: DI) :
     private fun evalAlwaysUiState() {
         val newState =
             when {
+                isVoiceSessionActive -> AlwaysUi.State.Voice
                 isClipboardFresh -> AlwaysUi.State.Clipboard
                 isInlineSuggestionPresent -> AlwaysUi.State.InlineSuggestion
                 else -> AlwaysUi.State.Toolbar
             }
         if (newState == alwaysUi.currentState) return
         alwaysUi.updateState(newState)
+    }
+
+    /**
+     * Drives the voice chip and keeps the bar on screen for the whole session,
+     * even when the user hid the input bar.
+     */
+    private fun onVoiceState(state: VoiceUiState) {
+        val active = state !is VoiceUiState.Idle
+        val visibilityChanged = active != isVoiceSessionActive
+        isVoiceSessionActive = active
+        if (visibilityChanged) applyQuickBarVisibility()
+        when (state) {
+            is VoiceUiState.Preparing -> {
+                smoothedVoiceLevel = 0f
+                alwaysUi.voiceUi.setStatus(R.string.voice_preparing)
+            }
+
+            is VoiceUiState.Recognizing -> alwaysUi.voiceUi.setStatus(R.string.voice_recognizing)
+
+            is VoiceUiState.Recording -> {
+                smoothedVoiceLevel = 0f
+                alwaysUi.voiceUi.setRecording()
+            }
+
+            is VoiceUiState.Result -> alwaysUi.voiceUi.setResult(state.text, state.inserted)
+
+            is VoiceUiState.Idle -> Unit
+        }
+        evalAlwaysUiState()
+    }
+
+    /**
+     * Maps the raw RMS onto 0..1 over a 60 dB window with an instant attack and
+     * a slow release, so the meter follows speech instead of flickering.
+     */
+    private fun onVoiceAmplitude(rms: Float) {
+        val target =
+            if (rms <= 0f) {
+                0f
+            } else {
+                ((20f * log10(rms) + VOICE_LEVEL_FLOOR_DB) / VOICE_LEVEL_FLOOR_DB).coerceIn(0f, 1f)
+            }
+        smoothedVoiceLevel =
+            if (target > smoothedVoiceLevel) {
+                target
+            } else {
+                smoothedVoiceLevel + (target - smoothedVoiceLevel) * VOICE_LEVEL_RELEASE
+            }
+        alwaysUi.voiceUi.setLevel(smoothedVoiceLevel)
+    }
+
+    private fun applyQuickBarVisibility() {
+        view.visibility =
+            if (hideQuickBar && !isVoiceSessionActive) {
+                View.GONE
+            } else {
+                View.VISIBLE
+            }
     }
 
     private val swipeDownHideKeyboardCallback: ((KeyBehavior) -> Unit) = { d ->
@@ -158,6 +227,11 @@ class InputBarDelegate(override val di: DI) :
             clipboardUi.dismiss.setOnClickListener {
                 dismissClipboardSuggestion()
             }
+            voiceUi.onStop = { voiceInputManager.stopAndRecognize() }
+            voiceUi.onStart = { voiceInputManager.start() }
+            voiceUi.onInsert = { voiceInputManager.insertResult() }
+            voiceUi.onUndo = { voiceInputManager.undoInsert() }
+            voiceUi.onDismiss = { voiceInputManager.close() }
         }
     }
 
@@ -263,6 +337,19 @@ class InputBarDelegate(override val di: DI) :
             evalAlwaysUiState()
             ClipboardHelper.addOnUpdateListener(onClipboardUpdateListener)
             syncToolbarOptionStates()
+        }.also { bar ->
+            // Started here, and not in an init block, so the bar (and its
+            // theme-bound views) exist before the chip is first rendered. The
+            // post() keeps the first emission from re-entering the lazy view
+            // while it is still being built.
+            bar.post {
+                service.lifecycleScope.launch {
+                    voiceInputManager.state.collect { onVoiceState(it) }
+                }
+                service.lifecycleScope.launch {
+                    voiceInputManager.amplitude.collect { onVoiceAmplitude(it) }
+                }
+            }
         }
     }
 
@@ -378,3 +465,9 @@ class InputBarDelegate(override val di: DI) :
         alwaysUi.updateButtonsStyle(value.option, value.value)
     }
 }
+
+/** dB floor of the voice level meter: anything quieter than this reads as empty. */
+private const val VOICE_LEVEL_FLOOR_DB = 60f
+
+/** Per-update release factor of the voice level meter; smaller falls back slower. */
+private const val VOICE_LEVEL_RELEASE = 0.25f

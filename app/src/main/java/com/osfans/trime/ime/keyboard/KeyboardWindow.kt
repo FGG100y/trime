@@ -291,6 +291,11 @@ class KeyboardWindow(di: DI) :
         currentKeyboardView?.invalidateAllKeys()
     }
 
+    /** Repaints every key, e.g. when the space bar's recording highlight changes. */
+    fun invalidateKeys() {
+        currentKeyboardView?.invalidateAllKeys()
+    }
+
     override fun onStartInput(info: EditorInfo) {
         val targetKeyboard =
             when (info.imeOptions and EditorInfo.IME_FLAG_FORCE_ASCII) {

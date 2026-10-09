@@ -39,6 +39,7 @@ class AlwaysUi(
         Toolbar,
         Clipboard,
         InlineSuggestion,
+        Voice,
     }
 
     var currentState = State.Toolbar
@@ -70,6 +71,8 @@ class AlwaysUi(
 
     val inlineSuggestionsUi = InlineSuggestionsUi(ctx)
 
+    val voiceUi = VoiceSuggestionUi(ctx, scope)
+
     val hideKeyboardButton = ToolButton(ctx, R.drawable.ic_baseline_arrow_drop_down_24, scope)
     private val rightMostButton =
         ViewAnimator(ctx).apply {
@@ -87,6 +90,7 @@ class AlwaysUi(
             add(buttonsUi.root, lParams(matchParent, matchParent))
             add(clipboardUi.root, lParams(matchParent, matchParent))
             add(inlineSuggestionsUi.root, lParams(matchParent, matchParent))
+            add(voiceUi.root, lParams(matchParent, matchParent))
         }
 
     override val root: ConstraintLayout = constraintLayout {
@@ -146,6 +150,7 @@ class AlwaysUi(
         hideKeyboardButton.refreshColors()
         buttonsUi.refreshColors()
         clipboardUi.refreshColors()
+        voiceUi.refreshColors()
     }
 
     private fun updateRightMostButton(state: State) {

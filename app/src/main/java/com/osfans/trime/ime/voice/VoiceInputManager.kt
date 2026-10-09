@@ -7,6 +7,7 @@
 package com.osfans.trime.ime.voice
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.view.ContextThemeWrapper
 import androidx.core.content.ContextCompat
@@ -18,6 +19,9 @@ import com.osfans.trime.data.voice.SherpaOnnxEngine
 import com.osfans.trime.data.voice.VoiceModel
 import com.osfans.trime.data.voice.VoiceModelManager
 import com.osfans.trime.ime.core.TrimeInputMethodService
+import com.osfans.trime.ui.voice.VoicePermissionActivity
+import com.osfans.trime.util.AppUtils
+import com.osfans.trime.util.toast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -31,13 +35,16 @@ import org.kodein.di.DIAware
 import org.kodein.di.instance
 import timber.log.Timber
 
-/** UI state of the local voice input panel. */
+/** Green used for the microphone while the recorder is capturing. */
+val VOICE_RECORDING_COLOR: Int = 0xFF4CAF50.toInt()
+
+/** UI state of the local voice input session shown in the input bar. */
 sealed interface VoiceUiState {
     /** Nothing is happening. */
     data object Idle : VoiceUiState
 
     /** The recognizer is being loaded (the first use of a model can take a while). */
-    data object Loading : VoiceUiState
+    data object Preparing : VoiceUiState
 
     /** The microphone is capturing. */
     data object Recording : VoiceUiState
@@ -45,21 +52,25 @@ sealed interface VoiceUiState {
     /** Audio is being transcribed. */
     data object Recognizing : VoiceUiState
 
-    /** The transcript was inserted; [text] can still be undone for a moment. */
-    data class Committed(val text: String) : VoiceUiState
-
-    /** Something went wrong; [message] is already localised. */
-    data class Failure(val message: String) : VoiceUiState
+    /**
+     * The transcript is held in the input bar. [inserted] is true once it has
+     * been put into the editor, which turns the chip's action into an undo.
+     */
+    data class Result(
+        val text: String,
+        val inserted: Boolean,
+    ) : VoiceUiState
 }
 
 /**
  * Drives the local (fully on-device) voice input flow:
- * record -> transcribe -> insert the text straight into the editor, with a
- * short window in which the insertion can still be undone or re-recorded.
+ * record -> transcribe -> hold the transcript in the input bar, where the user
+ * inserts it at the cursor, or discards it.
  *
- * The transcript is committed, never kept as a composing string: Rime owns the
- * composing text, so sharing it with voice input is the fragile part the old
- * confirm step relied on.
+ * The transcript is **never inserted automatically**: inserting is a deliberate
+ * tap, so it lands where the user wants and there is no fragile "undo an
+ * automatic insertion" path. Undo only ever backs out a deliberate insert, and
+ * only while the text can still be located.
  */
 class VoiceInputManager(override val di: DI) : DIAware {
     private val context: ContextThemeWrapper by instance()
@@ -73,18 +84,20 @@ class VoiceInputManager(override val di: DI) : DIAware {
     private val _state = MutableStateFlow<VoiceUiState>(VoiceUiState.Idle)
     val state: StateFlow<VoiceUiState> = _state.asStateFlow()
 
+    /** Raw microphone RMS of the current recording, for the bar's level meter. */
     val amplitude: StateFlow<Float> get() = recorder.amplitude
 
     private var job: Job? = null
-    private var autoHideJob: Job? = null
     private var maxDurationJob: Job? = null
-    private var inputDialog: VoiceInputDialog? = null
 
     /** Bumped on every new session so stale background results are ignored. */
     private var generation = 0
 
-    /** Text inserted by the last session, kept only while it can still be undone. */
-    private var committedText: String = ""
+    /** The transcript currently held in the bar. */
+    private var resultText = ""
+
+    /** Absolute range the last insert landed in, used to undo after a cursor move. */
+    private var insertedRange: IntRange? = null
 
     fun hasPermission(): Boolean = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
         PackageManager.PERMISSION_GRANTED
@@ -94,20 +107,27 @@ class VoiceInputManager(override val di: DI) : DIAware {
     /** Whether the on-device recogniser can run on this device. */
     val isSupported: Boolean get() = engine.isSupported
 
-    /** Shows the floating voice input dialog. */
-    fun open() {
-        val dialog = inputDialog ?: VoiceInputDialog(di, this).also { inputDialog = it }
-        dialog.show()
-    }
-
     /**
-     * Called when the banner was dismissed without going through [close], for
-     * example when another dialog replaced it. Releases the session so the
-     * microphone is not left capturing in the background.
+     * Entry point of the space bar's long press. Missing setup is reported with
+     * a toast and the matching screen is opened directly, instead of the
+     * blocking dialog that used to host those actions.
      */
-    fun onDialogDismissed() {
-        releaseSession()
-        inputDialog = null
+    fun open() {
+        when {
+            !isSupported -> service.toast(R.string.voice_unsupported_abi)
+
+            !hasPermission() -> {
+                launchPermissionActivity()
+                service.toast(R.string.voice_permission_needed)
+            }
+
+            selectedModel() == null -> {
+                AppUtils.launchMainToVoice(service)
+                service.toast(R.string.voice_no_model)
+            }
+
+            else -> start()
+        }
     }
 
     /** Starts a new recording session, loading the recognizer if needed. */
@@ -115,22 +135,26 @@ class VoiceInputManager(override val di: DI) : DIAware {
         if (recorder.isRecording) return
 
         if (!isSupported) {
-            fail(R.string.voice_unsupported_abi)
+            service.toast(R.string.voice_unsupported_abi)
             return
         }
-
         if (!hasPermission()) {
-            fail(R.string.voice_permission_needed)
+            launchPermissionActivity()
+            service.toast(R.string.voice_permission_needed)
             return
         }
         val model =
             selectedModel() ?: run {
-                fail(R.string.voice_no_model)
+                AppUtils.launchMainToVoice(service)
+                service.toast(R.string.voice_no_model)
                 return
             }
 
         val current = ++generation
-        _state.value = VoiceUiState.Loading
+        // A new recording replaces anything still held from the previous one.
+        resultText = ""
+        insertedRange = null
+        _state.value = VoiceUiState.Preparing
 
         job?.cancel()
         job =
@@ -187,7 +211,9 @@ class VoiceInputManager(override val di: DI) : DIAware {
                         if (text.isBlank()) {
                             fail(R.string.voice_empty_result)
                         } else {
-                            insertAndOfferUndo(text, current)
+                            resultText = text
+                            insertedRange = null
+                            _state.value = VoiceUiState.Result(text, inserted = false)
                         }
                     }.onFailure {
                         Timber.e(it, "Voice recognition failed")
@@ -196,79 +222,49 @@ class VoiceInputManager(override val di: DI) : DIAware {
             }
     }
 
-    /**
-     * Inserts [text] straight into the editor and keeps the card around for a
-     * moment so it can be undone or re-recorded.
-     */
-    private fun insertAndOfferUndo(text: String, current: Int) {
+    /** Inserts the held transcript at the current cursor. */
+    fun insertResult() {
+        val text = resultText
+        if (text.isEmpty()) return
+        val offset = service.lastCursorOffset
+        // End any active Rime composition first, so the transcript is not mixed
+        // into the composing region the user is still typing into.
+        service.finishComposingTextForVoice()
         service.commitText(text)
-        committedText = text
-        _state.value = VoiceUiState.Committed(text)
-        autoHideJob?.cancel()
-        autoHideJob =
-            service.lifecycleScope.launch {
-                delay(COMMIT_UNDO_WINDOW_MS)
-                if (current == generation) dismissCard()
-            }
+        insertedRange = if (offset >= 0) offset until (offset + text.length) else null
+        _state.value = VoiceUiState.Result(text, inserted = true)
     }
 
-    /** Removes the transcript inserted by the last session, when it is still there. */
-    fun undo() {
-        val text = committedText
-        committedText = ""
-        if (text.isNotEmpty()) {
-            service.deleteCommittedTextIfPresent(text)
+    /** Removes the last insert, when it can still be located. */
+    fun undoInsert() {
+        val text = resultText
+        if (text.isEmpty()) return
+        if (service.deleteVoiceTextIfPresent(text, insertedRange)) {
+            insertedRange = null
+            _state.value = VoiceUiState.Result(text, inserted = false)
+        } else {
+            // The text is no longer where we left it (edited or deleted since),
+            // so be explicit instead of closing as if the undo had worked.
+            service.toast(R.string.voice_undo_failed)
         }
-        close()
     }
 
-    /** Discards the session and closes the dialog. */
-    fun cancel() {
-        close()
-    }
-
-    /**
-     * Drops the last transcript and starts a new take, so the new one replaces
-     * it instead of being appended.
-     */
-    fun retry() {
-        val text = committedText
-        committedText = ""
-        if (text.isNotEmpty()) {
-            service.deleteCommittedTextIfPresent(text)
-        }
-        releaseSession()
-        start()
-    }
-
-    /** Stops recording/recognising, resets the state and closes the dialog. */
+    /** Closes the session and drops the held transcript. */
     fun close() {
         releaseSession()
-        inputDialog?.dismiss()
-        inputDialog = null
     }
 
-    /** Resets the session without touching the dialog. */
+    /** Resets the session and hides the bar. */
     private fun releaseSession() {
         generation++
         job?.cancel()
         job = null
-        autoHideJob?.cancel()
-        autoHideJob = null
         maxDurationJob?.cancel()
         maxDurationJob = null
         recorder.cancel()
-        committedText = ""
+        resultText = ""
+        insertedRange = null
         _state.value = VoiceUiState.Idle
-    }
-
-    /** Hides the card, leaving the inserted text in the editor. */
-    private fun dismissCard() {
-        autoHideJob = null
-        committedText = ""
-        _state.value = VoiceUiState.Idle
-        inputDialog?.dismiss()
-        inputDialog = null
     }
 
     /** Releases the recognizer, e.g. when the input method is destroyed. */
@@ -281,13 +277,18 @@ class VoiceInputManager(override val di: DI) : DIAware {
         stringRes: Int,
         vararg args: Any,
     ) {
-        _state.value = VoiceUiState.Failure(context.getString(stringRes, *args))
+        service.toast(context.getString(stringRes, *args))
+        releaseSession()
+    }
+
+    private fun launchPermissionActivity() {
+        context.startActivity(
+            Intent(context, VoicePermissionActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
     }
 
     private companion object {
-        /** How long the inserted transcript can still be undone. */
-        const val COMMIT_UNDO_WINDOW_MS = 6_000L
-
         /** Longest single recording; mirrors the recorder's own hard cap. */
         const val MAX_RECORDING_MS = 60_000L
     }

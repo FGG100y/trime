@@ -21,6 +21,7 @@ import com.osfans.trime.data.theme.Theme
 import com.osfans.trime.ime.core.TrimeInputMethodService
 import com.osfans.trime.ime.popup.PopupAction
 import com.osfans.trime.ime.popup.PopupDelegate
+import com.osfans.trime.ime.voice.VOICE_RECORDING_COLOR
 import com.osfans.trime.util.sp
 import splitties.dimensions.dp
 import timber.log.Timber
@@ -292,15 +293,18 @@ class KeyView(
 
         // While the space bar's long press runs the voice input, do not
         // advertise the action the theme bound to it (usually a language or
-        // keyboard switch) and show a microphone instead.
+        // keyboard switch) and show a microphone instead. The microphone turns
+        // green while recording, which stays visible on any colour scheme.
+        val isVoiceSpace = key.code == KeyEvent.KEYCODE_SPACE && voiceInputTriggeredOnSpace()
         val symbol =
-            if (key.code == KeyEvent.KEYCODE_SPACE && voiceInputTriggeredOnSpace()) {
+            if (isVoiceSpace) {
                 VOICE_SPACE_SYMBOL
             } else {
                 key.symbolLabel
             }
         if (symbol.isNotEmpty()) {
-            drawSymbol(canvas, symbol)
+            val colorOverride = if (isVoiceSpace && service.isVoiceRecording) VOICE_RECORDING_COLOR else null
+            drawSymbol(canvas, symbol, colorOverride = colorOverride)
         }
 
         val hint = key.hint
@@ -391,11 +395,16 @@ class KeyView(
         icon.draw(canvas)
     }
 
-    private fun drawSymbol(canvas: Canvas, text: String, isTop: Boolean = true) {
+    private fun drawSymbol(
+        canvas: Canvas,
+        text: String,
+        isTop: Boolean = true,
+        colorOverride: Int? = null,
+    ) {
         if (isTop && keyboardView.hideKeySymbol) return
         if (!isTop && keyboardView.hideKeyHint) return
 
-        val textColor = key.getSymbolColor()
+        val textColor = colorOverride ?: key.getSymbolColor()
         val textSize = sp(key.symbolTextSize.takeIf { it > 0f } ?: keyboardView.symbolTextSize)
         val offsetX = if (isTop) key.keySymbolOffsetX else key.keyHintOffsetX
         val offsetY = if (isTop) key.keySymbolOffsetY else key.keyHintOffsetY

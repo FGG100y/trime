@@ -16,7 +16,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.text.InputType
-import android.view.Gravity
 import android.view.InputDevice
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
@@ -445,6 +444,7 @@ open class TrimeInputMethodService : LifecycleInputMethodService() {
             candidatesStart,
             candidatesEnd,
         )
+        lastCursorOffset = newSelStart
         cursorUpdateIndex += 1
         handleCursorUpdate(newSelStart, newSelEnd, candidatesStart, candidatesEnd, cursorUpdateIndex)
         inputView?.updateSelection(newSelStart, newSelEnd)
@@ -1018,16 +1018,21 @@ open class TrimeInputMethodService : LifecycleInputMethodService() {
     private var showingDialog: Dialog? = null
 
     /**
+     * Cursor offset of the last selection update, in absolute editor
+     * coordinates. The voice input keeps it so an insert can be undone even
+     * after the user moved the cursor.
+     */
+    var lastCursorOffset: Int = -1
+        private set
+
+    /** Whether the local voice recorder is currently capturing. */
+    val isVoiceRecording: Boolean get() = inputView?.isVoiceRecording == true
+
+    /**
      * Shows [dialog] attached to the input method window.
-     *
-     * A [floating] dialog is laid out as a wrap-content banner at the top of the
-     * screen and neither dims nor blocks the app behind it, which is what the
-     * voice input banner wants: the user can keep scrolling the app while
-     * dictating. Modal dialogs keep the full-screen, dimmed behaviour.
      */
     fun showDialog(
         dialog: Dialog,
-        floating: Boolean = false,
         onDismiss: (() -> Unit)? = null,
     ) {
         showingDialog?.dismiss()
@@ -1036,21 +1041,10 @@ open class TrimeInputMethodService : LifecycleInputMethodService() {
                 token = decorView.windowToken
                 type = WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG
             }
-            window.addFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
-            if (floating) {
-                window.addFlags(
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                )
-                window.setGravity(Gravity.TOP or Gravity.CENTER_HORIZONTAL)
-                window.setLayout(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                )
-            } else {
-                window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-                window.setDimAmount(styledFloat(android.R.attr.backgroundDimAmount))
-            }
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM or WindowManager.LayoutParams.FLAG_DIM_BEHIND,
+            )
+            window.setDimAmount(styledFloat(android.R.attr.backgroundDimAmount))
         }
         dialog.setOnDismissListener {
             showingDialog = null
@@ -1061,22 +1055,42 @@ open class TrimeInputMethodService : LifecycleInputMethodService() {
     }
 
     /**
-     * Deletes [text] immediately before the cursor, when it is still there.
+     * Ends any active composition so a following commit is not merged into it.
+     * Used before the voice transcript is inserted.
+     */
+    fun finishComposingTextForVoice() {
+        currentInputConnection?.finishComposingText()
+        composingText = ""
+        lastCommittedText = ""
+    }
+
+    /**
+     * Deletes [text] when it is still in the editor, backing the voice input
+     * undo.
      *
-     * This backs the voice input undo. Checking the text in front of the cursor
-     * makes it safe when the user has typed, moved the cursor or switched to
-     * another editor since the transcription: nothing is deleted unless the
-     * transcript is still exactly where the voice input left it.
+     * The transcript is normally right before the cursor, which is checked
+     * first. If the user only moved the cursor, [range] (the absolute range
+     * recorded at insert time) is used to find it again. Anything else -- the
+     * user edited around it, or switched editors -- leaves it in place and
+     * reports failure, so the caller can tell the user instead of silently
+     * pretending the undo worked.
      *
      * @return whether anything was deleted.
      */
-    fun deleteCommittedTextIfPresent(text: String): Boolean {
+    fun deleteVoiceTextIfPresent(
+        text: String,
+        range: IntRange?,
+    ): Boolean {
         if (text.isEmpty()) return false
         val ic = currentInputConnection ?: return false
-        if (ic.getTextBeforeCursor(text.length, 0)?.toString() != text) return false
         // deleteSurroundingText reports a result and understands code points
         // from API 24 on; older devices simply do not get the undo.
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        if (ic.getTextBeforeCursor(text.length, 0)?.toString() != text) {
+            if (range == null || range.first < 0) return false
+            ic.setSelection(range.last + 1, range.last + 1)
+            if (ic.getTextBeforeCursor(text.length, 0)?.toString() != text) return false
+        }
         val deleted = ic.deleteSurroundingTextInCodePoints(text.codePointCount(0, text.length), 0)
         if (deleted) {
             composingText = ""

@@ -7,7 +7,7 @@ Design and implementation notes for Trime's optional, fully offline voice input.
 - Recognise speech **entirely on device**; audio never leaves the phone.
 - The app keeps its current privacy property of **not requesting `INTERNET`**.
 - Plug into the existing input flow: long press space, record, and insert the
-  transcript straight into the editor, undoable for a moment.
+  transcript from the input bar, at the cursor the user chooses.
 
 ## Non-goals (v1)
 
@@ -26,7 +26,7 @@ Design and implementation notes for Trime's optional, fully offline voice input.
 | ABIs | `arm64-v8a` (x86_64 optional, for emulators) |
 | Native library | Prebuilt `.so` from the official sherpa-onnx AAR, for a first working version |
 | Trigger | The space key's long press, selectable in Settings |
-| Result | Inserted straight into the editor; undoable for a few seconds |
+| Result | Held in the input bar; inserted at the cursor on a tap, undoable |
 | Streaming | Not used |
 | VAD | Not used in v1 (Silero VAD can be added later) |
 
@@ -120,20 +120,22 @@ data/voice/
   AsrEngine.kt              engine interface (load / recognize / release)
   SherpaOnnxEngine.kt       sherpa-onnx OfflineRecognizer implementation
 ime/voice/
-  AudioRecorder.kt          AudioRecord -> FloatArray, amplitude StateFlow
+  AudioRecorder.kt          AudioRecord -> FloatArray
   VoiceInputManager.kt      orchestration + VoiceUiState StateFlow
-  VoiceInputDialog.kt       floating dialog showing status and transcript
+ime/bar/ui/
+  VoiceSuggestionUi.kt      status/transcript chip in the always-bar
 ui/voice/
   VoicePermissionActivity.kt  transparent activity requesting RECORD_AUDIO
 ```
 
 Reused infrastructure:
 
-- `TrimeInputMethodService.showDialog()`
-  (`TYPE_APPLICATION_ATTACHED_DIALOG`) for the floating dialog, which leaves
-  the keyboard in place instead of replacing the input area.
-- `TrimeInputMethodService.updateComposingText()` and `commitText()` to put the
-  result in the editor and commit it.
+- The always-bar (`AlwaysUi` / `InputBarDelegate`) hosts the voice chip as a new
+  `AlwaysUi.State.Voice`, taking over the toolbar area while a session is
+  active without touching the keyboard.
+- `TrimeInputMethodService.commitText()` to insert the result, and
+  `CurrentInputConnection.finishComposingText()` first so it is not merged into
+  an active Rime composition.
 - `AppPrefs` delegates for settings.
 - `CommonKeyboardActionListener`'s `KEYCODE_VOICE_ASSIST` branch to route the
   space long press.
@@ -146,24 +148,29 @@ long press space
        OFF      : nothing
        LOCAL    : VoiceInputManager.open()  (this document)
        EXTERNAL : switch to the system voice input method (old behaviour)
-  -> a non-modal banner shows at the top, VoiceInputManager.start()
-       no permission -> VoicePermissionActivity
-       no model      -> message + "open settings"
-       else          -> load recognizer (cached) -> AudioRecorder.start()
-  -> "Stop" -> AudioRecorder.stop() -> SherpaOnnxEngine.recognize()
-  -> commitText(text): the text lands in the editor straight away
-  -> the banner offers [Undo] / [Retry] for a few seconds, then disappears
+  -> open()
+       unsupported ABI -> toast
+       no permission   -> open VoicePermissionActivity + toast
+       no model        -> open the voice settings + toast
+       else            -> load recognizer (cached) -> AudioRecorder.start()
+  -> while recording the bar shows a highlighted microphone + "Listening…",
+     the space bar's microphone is highlighted, and tapping the chip stops
+  -> tap the chip -> AudioRecorder.stop() -> SherpaOnnxEngine.recognize()
+  -> the transcript is shown in the bar, but is **not inserted**
+  -> tap the chip    -> commitText(text) at the cursor, the chip offers Undo
+     tap the chip's ✕ -> drop the transcript and close the session
 ```
 
-The transcript is **committed**, never left as a composing string, so voice
-input never shares Rime's composing text. `[Undo]` only deletes anything while
-the transcript is still exactly in front of the cursor, which makes it safe
-alongside typing and cursor movement.
+The transcript is **never inserted automatically**, so it always lands where the
+user wants and there is no fragile "undo an automatic insert" path. Inserting is
+a deliberate tap; `Undo` only backs that out while the text can still be located
+(right before the cursor, or at the absolute range recorded at insert time).
+Anything else reports `voice_undo_failed` and leaves the transcript in the bar.
 
-The banner window is non-modal (`showDialog(..., floating = true)`): it does not
-dim the app and lets touches outside it through, so the user can keep browsing
-while dictating. This is the most delicate part of the integration and the first
-thing to regression-test.
+While the user types, Rime candidates take over the bar and the voice chip is
+hidden; it comes back as soon as the candidate row clears, so "type to add
+something, then insert the transcript" works. The chip is dropped on the next
+recording, on ✕, or when the input view goes away.
 
 ## Settings
 
@@ -193,12 +200,19 @@ models live in app-private storage and are imported through SAF.
 2. Import `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17` (or the
    X-ASR release) and check that the transcript is punctuated.
 3. Set *Long press space* to *Local voice input*.
-4. Long press space, speak, stop. Check the text lands in the editor and the
-   banner offers *Undo* / *Retry*.
-5. Check *Undo* removes the text, *Retry* replaces it, and that the banner lets
-   you keep scrolling the app behind it (it is not modal).
-6. Confirm Rime composing still works right after a voice commit.
-7. Measure first-token latency and peak memory on a low-end device.
+4. Long press space: the bar shows a highlighted microphone and "Listening…",
+   and the space bar's microphone is highlighted. Tap the chip to stop.
+5. After recognising, the transcript appears in the bar but is **not** in the
+   editor yet. Tap it: it is inserted at the cursor and the chip now shows
+   *Undo*.
+6. Tap *Undo*: the text is removed and the chip is back to insertable. Move the
+   cursor, type into the editor until candidates show (the chip hides), then
+   clear the composition (the chip returns) and insert it at the new cursor.
+7. Check the fallback: undo after typing around the transcript shows the
+   "couldn't undo" toast instead of deleting the wrong text.
+8. Confirm Rime composing still works right after a voice insert, and that the
+   space bar keeps typing a space the whole time (it is only highlighted).
+9. Measure first-token latency and peak memory on a low-end device.
 
 ## Future work
 
