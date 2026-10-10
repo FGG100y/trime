@@ -370,7 +370,15 @@ class InputBarDelegate(override val di: DI) :
     }
 
     override fun onStartInput(info: EditorInfo) {
+        voiceInputManager.onEditorStarted()
         evalAlwaysUiState()
+    }
+
+    override fun onSelectionUpdate(
+        start: Int,
+        end: Int,
+    ) {
+        voiceInputManager.onSelectionUpdate(start, end)
     }
 
     override fun onWindowAttached(window: BoardWindow) {

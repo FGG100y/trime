@@ -163,9 +163,15 @@ long press space
 
 The transcript is **never inserted automatically**, so it always lands where the
 user wants and there is no fragile "undo an automatic insert" path. Inserting is
-a deliberate tap; `Undo` only backs that out while the text can still be located
-(right before the cursor, or at the absolute range recorded at insert time).
-Anything else reports `voice_undo_failed` and leaves the transcript in the bar.
+a deliberate tap.
+
+The undo window only lasts while the caret stays right after the insert. As soon
+as the caret moves, a new composition starts, the editor changes, or a short
+timeout elapses, the insert is final and the chip closes: undoing after the
+caret moved would delete text that may be off screen, silently, and the chip
+could not be inserted again anyway, so it must not keep occupying the bar.
+`Undo` while the caret is still there backs the insert out; if the text has
+already been edited away it reports `voice_undo_failed` and closes.
 
 While the user types, Rime candidates take over the bar and the voice chip is
 hidden; it comes back as soon as the candidate row clears, so "type to add
@@ -208,11 +214,15 @@ models live in app-private storage and are imported through SAF.
 6. Tap *Undo*: the text is removed and the chip is back to insertable. Move the
    cursor, type into the editor until candidates show (the chip hides), then
    clear the composition (the chip returns) and insert it at the new cursor.
-7. Check the fallback: undo after typing around the transcript shows the
-   "couldn't undo" toast instead of deleting the wrong text.
-8. Confirm Rime composing still works right after a voice insert, and that the
+7. Insert again, then move the caret somewhere else: the chip closes instead of
+   staying in the bar. Insert once more and leave it alone: the chip closes on
+   its own after the timeout.
+8. Check the fallback: undo after editing around the transcript shows the
+   "couldn't undo" toast and closes the chip, instead of deleting the wrong text
+   or leaving a chip that can never be undone.
+9. Confirm Rime composing still works right after a voice insert, and that the
    space bar keeps typing a space the whole time (it is only highlighted).
-9. Measure first-token latency and peak memory on a low-end device.
+10. Measure first-token latency and peak memory on a low-end device.
 
 ## Future work
 

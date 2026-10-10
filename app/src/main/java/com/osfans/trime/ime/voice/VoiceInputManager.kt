@@ -96,8 +96,17 @@ class VoiceInputManager(override val di: DI) : DIAware {
     /** The transcript currently held in the bar. */
     private var resultText = ""
 
-    /** Absolute range the last insert landed in, used to undo after a cursor move. */
+    /** Absolute range the last insert landed in, used to undo right away. */
     private var insertedRange: IntRange? = null
+
+    /** Caret position the insert is expected to leave behind, -1 when unknown. */
+    private var insertedCaret = -1
+
+    /** Whether the caret produced by the insert itself has been observed yet. */
+    private var insertSettled = false
+
+    /** Backstop that drops an inserted transcript the user never acts on. */
+    private var insertTimeoutJob: Job? = null
 
     fun hasPermission(): Boolean = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
         PackageManager.PERMISSION_GRANTED
@@ -154,6 +163,9 @@ class VoiceInputManager(override val di: DI) : DIAware {
         // A new recording replaces anything still held from the previous one.
         resultText = ""
         insertedRange = null
+        cancelInsertTimeout()
+        insertedCaret = -1
+        insertSettled = false
         _state.value = VoiceUiState.Preparing
 
         job?.cancel()
@@ -232,6 +244,9 @@ class VoiceInputManager(override val di: DI) : DIAware {
         service.finishComposingTextForVoice()
         service.commitText(text)
         insertedRange = if (offset >= 0) offset until (offset + text.length) else null
+        insertedCaret = if (offset >= 0) offset + text.length else -1
+        insertSettled = false
+        armInsertTimeout()
         _state.value = VoiceUiState.Result(text, inserted = true)
     }
 
@@ -241,12 +256,72 @@ class VoiceInputManager(override val di: DI) : DIAware {
         if (text.isEmpty()) return
         if (service.deleteVoiceTextIfPresent(text, insertedRange)) {
             insertedRange = null
+            cancelInsertTimeout()
+            insertedCaret = -1
+            insertSettled = false
             _state.value = VoiceUiState.Result(text, inserted = false)
         } else {
-            // The text is no longer where we left it (edited or deleted since),
-            // so be explicit instead of closing as if the undo had worked.
+            // The insert is no longer where we left it, so it can never be
+            // undone: say so, then end the session instead of leaving a chip
+            // that can neither be inserted again nor safely undone.
             service.toast(R.string.voice_undo_failed)
+            close()
         }
+    }
+
+    /**
+     * Reports an editor selection change.
+     *
+     * While the transcript is pending (not inserted) this is ignored, because
+     * the user is free to place the cursor before inserting. Once inserted, the
+     * undo window only lasts as long as the caret stays right after the insert:
+     * undoing after the caret moved would delete text that may be off screen,
+     * silently, and the chip could not be inserted again anyway. So the first
+     * caret change that is not the insert's own finalises it and closes the
+     * session.
+     */
+    fun onSelectionUpdate(
+        start: Int,
+        end: Int,
+    ) {
+        val current = _state.value
+        if (current !is VoiceUiState.Result || !current.inserted) return
+        val caret = if (start == end) start else -1
+        if (!insertSettled) {
+            // The commit moves the caret here, sometimes through more than one
+            // update; don't judge the selection until it lands on the insert
+            // point, otherwise the insert itself would close the session.
+            if (caret >= 0 && (insertedCaret < 0 || caret == insertedCaret)) {
+                insertedCaret = caret
+                insertSettled = true
+            }
+            return
+        }
+        if (caret >= 0 && caret == insertedCaret) return
+        close()
+    }
+
+    /** The editor changed; an inserted transcript is final and can be dropped. */
+    fun onEditorStarted() {
+        val current = _state.value
+        if (current is VoiceUiState.Result && current.inserted) close()
+    }
+
+    /** Auto-finalises an inserted result the user never interacts with. */
+    private fun armInsertTimeout() {
+        insertTimeoutJob?.cancel()
+        insertTimeoutJob =
+            service.lifecycleScope.launch {
+                delay(INSERT_FINALIZE_MS)
+                insertTimeoutJob = null
+                val current = _state.value
+                if (current is VoiceUiState.Result && current.inserted) close()
+            }
+    }
+
+    private fun cancelInsertTimeout() {
+        insertTimeoutJob?.cancel()
+        insertTimeoutJob = null
     }
 
     /** Closes the session and drops the held transcript. */
@@ -262,8 +337,11 @@ class VoiceInputManager(override val di: DI) : DIAware {
         maxDurationJob?.cancel()
         maxDurationJob = null
         recorder.cancel()
+        cancelInsertTimeout()
         resultText = ""
         insertedRange = null
+        insertedCaret = -1
+        insertSettled = false
         _state.value = VoiceUiState.Idle
     }
 
@@ -291,5 +369,8 @@ class VoiceInputManager(override val di: DI) : DIAware {
     private companion object {
         /** Longest single recording; mirrors the recorder's own hard cap. */
         const val MAX_RECORDING_MS = 60_000L
+
+        /** How long an inserted transcript may sit in the bar before it is dropped. */
+        const val INSERT_FINALIZE_MS = 8_000L
     }
 }
