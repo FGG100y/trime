@@ -377,6 +377,11 @@ class KeyboardWindow(di: DI) :
     }
 
     override fun onRimeSchemaUpdated(schema: SchemaItem) {
+        // The remembered locked keyboard belongs to the schema that selected it.
+        // Drop it here, otherwise a keyboard from the previous schema (e.g. the
+        // `t9` nine-key grid) is restored on the next input start even after
+        // switching to a schema that has no keyboard of its own.
+        lastLockKeyboardId = ""
         switchKeyboard(".default")
     }
 
