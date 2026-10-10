@@ -226,9 +226,16 @@ models live in app-private storage and are imported through SAF.
 
 ## Future work
 
-- Streaming / live partial text: surveyed and deferred, see
-  [voice-input-todo.md](voice-input-todo.md).
-- Silero VAD for segmentation (pseudo-streaming) and auto-stop on silence.
+- Streaming / live partial text is surveyed and deferred. The batch pipeline
+  (whole utterance in, one transcript out) leaves no slot for a partial, so
+  either a true streaming engine (sherpa-onnx `OnlineRecognizer`; weaker
+  Chinese, no native punctuation) or pseudo-streaming on the current offline
+  models — segmenting with Silero VAD and transcribing per segment (recommended
+  start), or re-decoding the growing buffer every few hundred ms (near-live but
+  O(n²) and jittery). Any of them needs a chunked `AudioRecorder`, a partial
+  state in `VoiceInputManager` / `VoiceUiState`, and a result view that can keep
+  updating while it is being inserted.
+- Silero VAD for segmentation and auto-stop on silence.
 - Build sherpa-onnx/onnxruntime from source for F-Droid.
 - Hotword / replacement dictionaries.
 - Optional punctuation restoration models (CT-Transformer) for models that do
