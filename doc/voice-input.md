@@ -12,8 +12,10 @@ Design and implementation notes for Trime's optional, fully offline voice input.
 ## Non-goals (v1)
 
 - No cloud fallback, no account, no telemetry.
-- No streaming / live word-by-word output: the user records one utterance at a
-  time, and the whole utterance is transcribed when recording stops.
+- No true streaming / live word-by-word output: the offline recognizer still
+  transcribes whole utterances, but the capture is cut at natural pauses and
+  each finished utterance is inserted while the user keeps speaking (see
+  *Process perception*).
 - The existing "system voice input method" behaviour is kept as an option, it is
   not replaced.
 
@@ -26,9 +28,9 @@ Design and implementation notes for Trime's optional, fully offline voice input.
 | ABIs | `arm64-v8a` (x86_64 optional, for emulators) |
 | Native library | Prebuilt `.so` from the official sherpa-onnx AAR, for a first working version |
 | Trigger | The space key's long press, selectable in Settings |
-| Result | Held in the input bar; inserted at the cursor on a tap, undoable |
-| Streaming | Not used |
-| VAD | Not used in v1 (Silero VAD can be added later) |
+| Result | Finished utterances are cut at pauses and inserted at the cursor while the user is still speaking; the text is ordinary editor text, with no held result or undo |
+| Streaming | Not used; utterances are segmented by pause instead |
+| VAD | Silero VAD, bundled in `assets/silero_vad.onnx`; the fixed-threshold energy segmenter is only a fallback |
 
 ## Why prebuilt `.so`, and what it costs
 
@@ -120,7 +122,8 @@ data/voice/
   AsrEngine.kt              engine interface (load / recognize / release)
   SherpaOnnxEngine.kt       sherpa-onnx OfflineRecognizer implementation
 ime/voice/
-  AudioRecorder.kt          AudioRecord -> FloatArray
+  AudioRecorder.kt          AudioRecord -> FloatArray, with a per-block callback
+  VoiceSegmenter.kt         cuts the capture into utterances at pauses
   VoiceInputManager.kt      orchestration + VoiceUiState StateFlow
 ime/bar/ui/
   VoiceSuggestionUi.kt      status/transcript chip in the always-bar
@@ -155,28 +158,48 @@ long press space
        else            -> load recognizer (cached) -> AudioRecorder.start()
   -> while recording the bar shows a highlighted microphone + "Listening…",
      the space bar's microphone is highlighted, and tapping the chip stops
-  -> tap the chip -> AudioRecorder.stop() -> SherpaOnnxEngine.recognize()
-  -> the transcript is shown in the bar, but is **not inserted**
-  -> tap the chip    -> commitText(text) at the cursor, the chip offers Undo
-     tap the chip's ✕ -> drop the transcript and close the session
+  -> every block of audio is fed to the segmenter; when a pause closes an
+     utterance, it is transcribed and inserted at the cursor right away
+  -> tap the chip -> AudioRecorder.stop() -> the buffered utterance is
+     transcribed too -> the bar hides
+  -> the session also ends after 30 s without speech, or as soon as the user
+     touches the keyboard (typing, layout switch, a panel)
 ```
 
-The transcript is **never inserted automatically**, so it always lands where the
-user wants and there is no fragile "undo an automatic insert" path. Inserting is
-a deliberate tap.
+## Process perception
 
-The undo window only lasts while the caret stays right after the insert. As soon
-as the caret moves, a new composition starts, the editor changes, or a short
-timeout elapses, the insert is final and the chip closes: undoing after the
-caret moved would delete text that may be off screen, silently, and the chip
-could not be inserted again anyway, so it must not keep occupying the bar.
-`Undo` while the caret is still there backs the insert out; if the text has
-already been edited away it reports `voice_undo_failed` and closes.
+A batch recognizer produces nothing until the recording stops, which makes the
+user talk into the dark. To avoid that, the capture is segmented and each
+finished utterance is inserted **while the user is still speaking**: the first
+sentence is already in the editor before the second one is finished. This is the
+"commit on pause" behaviour other input methods offer, and it is what makes the
+result feel live without a streaming model.
 
-While the user types, Rime candidates take over the bar and the voice chip is
-hidden; it comes back as soon as the candidate row clears, so "type to add
-something, then insert the transcript" works. The chip is dropped on the next
-recording, on ✕, or when the input view goes away.
+The bar no longer has to hold a long transcript, so the single-line bar stays
+readable: finished text lives in the editor, where the app scrolls it, and the
+bar only shows the microphone and the level while listening.
+
+An utterance ends after roughly 0.5 s of silence (or at 15 s of continuous
+speech, the VAD's max segment length), and a short blip is discarded rather
+than transcribed. The session keeps listening and keeps inserting utterances
+until the user taps the microphone, until **30 s pass with no speech**, or as
+soon as the user touches the keyboard (typing, switching layout, opening a
+panel) — at that point they have moved on to manual input. There is no
+wall-clock cap on how long a dictation may run: the recorder does not retain the
+session, so memory is bounded by one segment, not by the session.
+
+Silero is used instead of a fixed energy threshold on purpose. A real capture
+showed one continuous sentence whose level fell from 0.03 to 0.004; an absolute
+threshold either cut it after the loud opening or ignored the quiet rest. A
+model-based VAD does not depend on the device's microphone level.
+
+The inserted text is ordinary editor text: there is no held result, no undo and
+no close button. The bar is only the recording indicator (microphone + level),
+and the user corrects the committed text with the normal keyboard.
+
+Touching the keyboard ends the session, so the voice chip and the candidate row
+never compete: the first key press hands the bar back to Rime. The session is
+also dropped when the input view goes away.
 
 ## Settings
 
@@ -208,34 +231,31 @@ models live in app-private storage and are imported through SAF.
 3. Set *Long press space* to *Local voice input*.
 4. Long press space: the bar shows a highlighted microphone and "Listening…",
    and the space bar's microphone is highlighted. Tap the chip to stop.
-5. After recognising, the transcript appears in the bar but is **not** in the
-   editor yet. Tap it: it is inserted at the cursor and the chip now shows
-   *Undo*.
-6. Tap *Undo*: the text is removed and the chip is back to insertable. Move the
-   cursor, type into the editor until candidates show (the chip hides), then
-   clear the composition (the chip returns) and insert it at the new cursor.
-7. Insert again, then move the caret somewhere else: the chip closes instead of
-   staying in the bar. Insert once more and leave it alone: the chip closes on
-   its own after the timeout.
-8. Check the fallback: undo after editing around the transcript shows the
-   "couldn't undo" toast and closes the chip, instead of deleting the wrong text
-   or leaving a chip that can never be undone.
-9. Confirm Rime composing still works right after a voice insert, and that the
-   space bar keeps typing a space the whole time (it is only highlighted).
-10. Measure first-token latency and peak memory on a low-end device.
+5. Speak a sentence or two with a pause in between: each finished sentence
+   appears in the editor as you keep speaking, without tapping anything.
+6. Stop (tap the microphone): the last utterance is transcribed and inserted,
+   then the bar hides. The inserted text is editable like anything else.
+7. Start a session and type on the keyboard: the session ends immediately,
+   whatever the silence timer was doing.
+8. Start a session, say nothing for 30 s: the microphone is released on its own
+   and the bar hides.
+9. Check that a very short noise does not produce a stray insert, and that
+   leading/trailing silence is not transcribed.
+10. Confirm Rime composing still works right after a voice insert, and that the
+    space bar keeps typing a space the whole time (it is only highlighted).
+11. Measure utterance latency (pause -> text in editor) and peak memory on a
+    low-end device, and tune the segmenter thresholds if needed.
 
 ## Future work
 
-- Streaming / live partial text is surveyed and deferred. The batch pipeline
-  (whole utterance in, one transcript out) leaves no slot for a partial, so
-  either a true streaming engine (sherpa-onnx `OnlineRecognizer`; weaker
-  Chinese, no native punctuation) or pseudo-streaming on the current offline
-  models — segmenting with Silero VAD and transcribing per segment (recommended
-  start), or re-decoding the growing buffer every few hundred ms (near-live but
-  O(n²) and jittery). Any of them needs a chunked `AudioRecorder`, a partial
-  state in `VoiceInputManager` / `VoiceUiState`, and a result view that can keep
-  updating while it is being inserted.
-- Silero VAD for segmentation and auto-stop on silence.
+- Silero VAD is the production segmenter; the remaining gap is sub-pause,
+  word-by-word feedback, which needs either a true streaming engine
+  (sherpa-onnx `OnlineRecognizer`; weaker Chinese, no native punctuation) or
+  re-decoding the growing buffer every few hundred ms (near-live but O(n²) and
+  jittery).
+- Tune the VAD's pause length and the max utterance length, and expose them as
+  settings. An optional long silence timeout that ends the session could sit
+  next to them.
 - Build sherpa-onnx/onnxruntime from source for F-Droid.
 - Hotword / replacement dictionaries.
 - Optional punctuation restoration models (CT-Transformer) for models that do
