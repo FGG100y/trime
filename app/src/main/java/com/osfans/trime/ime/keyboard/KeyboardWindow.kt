@@ -275,6 +275,21 @@ class KeyboardWindow(di: DI) :
         Timber.d("Switched to keyboard: $target")
     }
 
+    /**
+     * Follows the keyboard's declared [Keyboard.asciiKeyboard] when rime's
+     * `ascii_mode` option flips, so toggling ascii mode (e.g. from the toolbar)
+     * also switches the layout instead of leaving a layout whose keys only make
+     * sense in the other mode. The target must declare the mode we just entered;
+     * that guard also stops the switch from bouncing when [attachKeyboard] sets
+     * `ascii_mode` itself.
+     */
+    private fun switchAsciiKeyboard(ascii: Boolean) {
+        val target = activeKeyboard?.asciiKeyboard?.takeIf { it.isNotEmpty() } ?: return
+        val targetConfig = theme.presetKeyboards[target] ?: return
+        if ((targetConfig.asciiMode != 0) != ascii) return
+        switchKeyboard(target)
+    }
+
     fun refreshKeyboards(isAll: Boolean = false) {
         val id = currentKeyboardId.ifEmpty { return }
         detachCurrentView()
@@ -388,6 +403,8 @@ class KeyboardWindow(di: DI) :
     override fun onRimeOptionUpdated(value: RimeMessage.OptionMessage.Data) {
         val option = value.option
         when {
+            option == "ascii_mode" -> switchAsciiKeyboard(value.value)
+
             option.startsWith("_keyboard_") -> {
                 val target = option.removePrefix("_keyboard_")
                 if (target.isNotEmpty()) {
