@@ -9,6 +9,7 @@ package com.osfans.trime.ime.voice
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.SystemClock
 import android.view.ContextThemeWrapper
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -24,7 +25,7 @@ import com.osfans.trime.util.AppUtils
 import com.osfans.trime.util.toast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -46,31 +47,27 @@ sealed interface VoiceUiState {
     /** The recognizer is being loaded (the first use of a model can take a while). */
     data object Preparing : VoiceUiState
 
-    /** The microphone is capturing. */
+    /** The microphone is capturing; finished utterances are inserted as they come. */
     data object Recording : VoiceUiState
 
-    /** Audio is being transcribed. */
+    /** The last buffered utterance is being transcribed after the capture stopped. */
     data object Recognizing : VoiceUiState
-
-    /**
-     * The transcript is held in the input bar. [inserted] is true once it has
-     * been put into the editor, which turns the chip's action into an undo.
-     */
-    data class Result(
-        val text: String,
-        val inserted: Boolean,
-    ) : VoiceUiState
 }
 
 /**
- * Drives the local (fully on-device) voice input flow:
- * record -> transcribe -> hold the transcript in the input bar, where the user
- * inserts it at the cursor, or discards it.
+ * Drives the local (fully on-device) voice input flow.
  *
- * The transcript is **never inserted automatically**: inserting is a deliberate
- * tap, so it lands where the user wants and there is no fragile "undo an
- * automatic insertion" path. Undo only ever backs out a deliberate insert, and
- * only while the text can still be located.
+ * The recognizer is an offline (whole-utterance) model, so it cannot stream
+ * partial text. To still let the user watch the result appear, the capture is
+ * cut into utterances at natural pauses ([VoiceSegmenter]) and each finished
+ * utterance is transcribed and inserted **immediately**, while the user is
+ * still speaking. That is the "commit on pause" behaviour described in
+ * `doc/voice-input.md`.
+ *
+ * The committed text is ordinary editor text: there is no undo, and no held
+ * result. The session ends when the user taps the microphone, when 30 s pass
+ * with no speech, or as soon as the user touches the keyboard to type, switch
+ * layout or open a panel — at that point they have moved on to manual input.
  */
 class VoiceInputManager(override val di: DI) : DIAware {
     private val context: ContextThemeWrapper by instance()
@@ -81,6 +78,14 @@ class VoiceInputManager(override val di: DI) : DIAware {
     private val engine: AsrEngine by lazy { SherpaOnnxEngine() }
     private val recorder = AudioRecorder(engine.sampleRate)
 
+    // Prefer the bundled Silero VAD; fall back to the level-based one only if
+    // the model cannot be loaded on this device.
+    private val segmenter: VoiceSegmenter by lazy {
+        runCatching { SileroVadSegmenter(context.assets, engine.sampleRate) }
+            .onFailure { Timber.w(it, "Silero VAD unavailable, falling back to the energy segmenter") }
+            .getOrElse { EnergySegmenter(engine.sampleRate) }
+    }
+
     private val _state = MutableStateFlow<VoiceUiState>(VoiceUiState.Idle)
     val state: StateFlow<VoiceUiState> = _state.asStateFlow()
 
@@ -88,25 +93,19 @@ class VoiceInputManager(override val di: DI) : DIAware {
     val amplitude: StateFlow<Float> get() = recorder.amplitude
 
     private var job: Job? = null
-    private var maxDurationJob: Job? = null
+    private var consumerJob: Job? = null
 
     /** Bumped on every new session so stale background results are ignored. */
     private var generation = 0
 
-    /** The transcript currently held in the bar. */
-    private var resultText = ""
+    /** Utterances waiting to be transcribed, recreated for every session. */
+    private var segments = Channel<FloatArray>(Channel.UNLIMITED)
 
-    /** Absolute range the last insert landed in, used to undo right away. */
-    private var insertedRange: IntRange? = null
+    /** Last time speech was seen, for the silence auto-stop; capture thread only. */
+    private var lastSpeechAt = 0L
 
-    /** Caret position the insert is expected to leave behind, -1 when unknown. */
-    private var insertedCaret = -1
-
-    /** Whether the caret produced by the insert itself has been observed yet. */
-    private var insertSettled = false
-
-    /** Backstop that drops an inserted transcript the user never acts on. */
-    private var insertTimeoutJob: Job? = null
+    /** Whether any utterance was committed in this session. Main thread only. */
+    private var committedAny = false
 
     fun hasPermission(): Boolean = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
         PackageManager.PERMISSION_GRANTED
@@ -160,12 +159,7 @@ class VoiceInputManager(override val di: DI) : DIAware {
             }
 
         val current = ++generation
-        // A new recording replaces anything still held from the previous one.
-        resultText = ""
-        insertedRange = null
-        cancelInsertTimeout()
-        insertedCaret = -1
-        insertSettled = false
+        committedAny = false
         _state.value = VoiceUiState.Preparing
 
         job?.cancel()
@@ -183,172 +177,121 @@ class VoiceInputManager(override val di: DI) : DIAware {
                     return@launch
                 }
 
-                if (recorder.start()) {
-                    _state.value = VoiceUiState.Recording
-                    maxDurationJob?.cancel()
-                    maxDurationJob =
-                        service.lifecycleScope.launch {
-                            delay(MAX_RECORDING_MS)
-                            if (current == generation && recorder.isRecording) stopAndRecognize()
+                segments = Channel(Channel.UNLIMITED)
+                consumerJob = launchConsumer(current)
+                lastSpeechAt = SystemClock.elapsedRealtime()
+
+                val started =
+                    recorder.start { block ->
+                        segmenter.accept(block).forEach { segments.trySend(it) }
+                        val now = SystemClock.elapsedRealtime()
+                        if (segmenter.isSpeechDetected) {
+                            lastSpeechAt = now
+                        } else if (now - lastSpeechAt >= SILENCE_STOP_MS) {
+                            // Push the threshold out so the stop is asked for once.
+                            lastSpeechAt = now
+                            service.lifecycleScope.launch {
+                                if (current == generation && recorder.isRecording) stop()
+                            }
                         }
+                    }
+                if (current != generation) {
+                    recorder.cancel()
+                    return@launch
+                }
+                if (started) {
+                    _state.value = VoiceUiState.Recording
                 } else {
                     fail(R.string.voice_recognition_failed, "AudioRecord init failed")
                 }
             }
     }
 
-    /** Stops the capture and transcribes what was recorded. */
-    fun stopAndRecognize() {
-        if (!recorder.isRecording) return
-
-        maxDurationJob?.cancel()
-        maxDurationJob = null
-        val samples = recorder.stop()
-        if (samples.size < engine.sampleRate / 4) {
-            fail(R.string.voice_empty_result)
-            return
-        }
-
-        val current = ++generation
-        _state.value = VoiceUiState.Recognizing
-        job =
-            service.lifecycleScope.launch {
-                val result =
-                    withContext(Dispatchers.Default) {
-                        runCatching { engine.recognize(samples) }
-                    }
-                if (current != generation) return@launch
-                result
-                    .onSuccess { text ->
-                        if (text.isBlank()) {
-                            fail(R.string.voice_empty_result)
-                        } else {
-                            resultText = text
-                            insertedRange = null
-                            _state.value = VoiceUiState.Result(text, inserted = false)
-                        }
-                    }.onFailure {
-                        Timber.e(it, "Voice recognition failed")
-                        fail(R.string.voice_recognition_failed, it.message.orEmpty())
-                    }
+    /**
+     * Transcribes finished utterances in order and inserts them as they arrive.
+     *
+     * The engine is not thread safe, so a single consumer handles every
+     * segment; recording keeps going while it works, and the channel queue
+     * absorbs utterances the recognizer has not caught up with yet.
+     */
+    private fun launchConsumer(current: Int): Job = service.lifecycleScope.launch(Dispatchers.Default) {
+        for (samples in segments) {
+            if (current != generation) break
+            val text =
+                runCatching { engine.recognize(samples) }
+                    .onFailure { Timber.e(it, "Voice recognition failed") }
+                    .getOrNull()
+                    ?.trim()
+                    .orEmpty()
+            if (text.isEmpty()) continue
+            withContext(Dispatchers.Main) {
+                if (current != generation) return@withContext
+                commitSegment(text)
             }
+        }
     }
 
-    /** Inserts the held transcript at the current cursor. */
-    fun insertResult() {
-        val text = resultText
-        if (text.isEmpty()) return
-        val offset = service.lastCursorOffset
+    /** Inserts one finished utterance at the cursor. */
+    private fun commitSegment(text: String) {
         // End any active Rime composition first, so the transcript is not mixed
         // into the composing region the user is still typing into.
         service.finishComposingTextForVoice()
         service.commitText(text)
-        insertedRange = if (offset >= 0) offset until (offset + text.length) else null
-        insertedCaret = if (offset >= 0) offset + text.length else -1
-        insertSettled = false
-        armInsertTimeout()
-        _state.value = VoiceUiState.Result(text, inserted = true)
+        committedAny = true
     }
 
-    /** Removes the last insert, when it can still be located. */
-    fun undoInsert() {
-        val text = resultText
-        if (text.isEmpty()) return
-        if (service.deleteVoiceTextIfPresent(text, insertedRange)) {
-            insertedRange = null
-            cancelInsertTimeout()
-            insertedCaret = -1
-            insertSettled = false
-            _state.value = VoiceUiState.Result(text, inserted = false)
-        } else {
-            // The insert is no longer where we left it, so it can never be
-            // undone: say so, then end the session instead of leaving a chip
-            // that can neither be inserted again nor safely undone.
-            service.toast(R.string.voice_undo_failed)
-            close()
+    /** Ends the capture, transcribes whatever is still buffered, then hides the bar. */
+    fun stop() {
+        if (!recorder.isRecording) return
+
+        recorder.stop()
+        segmenter.flush().forEach { segments.trySend(it) }
+        segments.close()
+
+        val current = generation
+        val consumer = consumerJob
+        consumerJob = null
+        _state.value = VoiceUiState.Recognizing
+
+        service.lifecycleScope.launch {
+            consumer?.join()
+            if (current != generation) return@launch
+            if (!committedAny) service.toast(R.string.voice_empty_result)
+            releaseSession()
         }
     }
 
     /**
-     * Reports an editor selection change.
-     *
-     * While the transcript is pending (not inserted) this is ignored, because
-     * the user is free to place the cursor before inserting. Once inserted, the
-     * undo window only lasts as long as the caret stays right after the insert:
-     * undoing after the caret moved would delete text that may be off screen,
-     * silently, and the chip could not be inserted again anyway. So the first
-     * caret change that is not the insert's own finalises it and closes the
-     * session.
+     * The user touched the keyboard: typed, switched layout or opened a panel.
+     * They have moved on to manual input, so the voice session ends.
      */
-    fun onSelectionUpdate(
-        start: Int,
-        end: Int,
-    ) {
-        val current = _state.value
-        if (current !is VoiceUiState.Result || !current.inserted) return
-        val caret = if (start == end) start else -1
-        if (!insertSettled) {
-            // The commit moves the caret here, sometimes through more than one
-            // update; don't judge the selection until it lands on the insert
-            // point, otherwise the insert itself would close the session.
-            if (caret >= 0 && (insertedCaret < 0 || caret == insertedCaret)) {
-                insertedCaret = caret
-                insertSettled = true
-            }
-            return
-        }
-        if (caret >= 0 && caret == insertedCaret) return
+    fun onManualInput() {
+        if (_state.value is VoiceUiState.Idle) return
         close()
     }
 
-    /** The editor changed; an inserted transcript is final and can be dropped. */
-    fun onEditorStarted() {
-        val current = _state.value
-        if (current is VoiceUiState.Result && current.inserted) close()
-    }
-
-    /** Auto-finalises an inserted result the user never interacts with. */
-    private fun armInsertTimeout() {
-        insertTimeoutJob?.cancel()
-        insertTimeoutJob =
-            service.lifecycleScope.launch {
-                delay(INSERT_FINALIZE_MS)
-                insertTimeoutJob = null
-                val current = _state.value
-                if (current is VoiceUiState.Result && current.inserted) close()
-            }
-    }
-
-    private fun cancelInsertTimeout() {
-        insertTimeoutJob?.cancel()
-        insertTimeoutJob = null
-    }
-
-    /** Closes the session and drops the held transcript. */
+    /** Closes the session and hides the bar. */
     fun close() {
         releaseSession()
-    }
-
-    /** Resets the session and hides the bar. */
-    private fun releaseSession() {
-        generation++
-        job?.cancel()
-        job = null
-        maxDurationJob?.cancel()
-        maxDurationJob = null
-        recorder.cancel()
-        cancelInsertTimeout()
-        resultText = ""
-        insertedRange = null
-        insertedCaret = -1
-        insertSettled = false
-        _state.value = VoiceUiState.Idle
     }
 
     /** Releases the recognizer, e.g. when the input method is destroyed. */
     fun release() {
         close()
+        segmenter.release()
         engine.release()
+    }
+
+    private fun releaseSession() {
+        generation++
+        job?.cancel()
+        job = null
+        consumerJob?.cancel()
+        consumerJob = null
+        segments.close()
+        recorder.cancel()
+        segmenter.reset()
+        _state.value = VoiceUiState.Idle
     }
 
     private fun fail(
@@ -367,10 +310,7 @@ class VoiceInputManager(override val di: DI) : DIAware {
     }
 
     private companion object {
-        /** Longest single recording; mirrors the recorder's own hard cap. */
-        const val MAX_RECORDING_MS = 60_000L
-
-        /** How long an inserted transcript may sit in the bar before it is dropped. */
-        const val INSERT_FINALIZE_MS = 8_000L
+        /** Silence after which the session ends on its own, freeing the mic. */
+        const val SILENCE_STOP_MS = 30_000L
     }
 }

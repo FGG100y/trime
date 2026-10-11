@@ -114,6 +114,9 @@ class CommonKeyboardActionListener(override val di: DI) : DIAware {
     val listener by lazy {
         object : KeyboardActionListener {
             override fun onPress(keyEventCode: Int) {
+                // Any real key press means the user moved on to manual input, so
+                // a running voice session ends here.
+                voiceInputManager.onManualInput()
                 InputFeedbackManager.run {
                     keyPressSound(keyEventCode)
                     keyPressSpeak(keyEventCode)

@@ -157,8 +157,6 @@ class InputBarDelegate(override val di: DI) :
                 alwaysUi.voiceUi.setRecording()
             }
 
-            is VoiceUiState.Result -> alwaysUi.voiceUi.setResult(state.text, state.inserted)
-
             is VoiceUiState.Idle -> Unit
         }
         evalAlwaysUiState()
@@ -227,10 +225,8 @@ class InputBarDelegate(override val di: DI) :
             clipboardUi.dismiss.setOnClickListener {
                 dismissClipboardSuggestion()
             }
-            voiceUi.onStop = { voiceInputManager.stopAndRecognize() }
+            voiceUi.onStop = { voiceInputManager.stop() }
             voiceUi.onStart = { voiceInputManager.start() }
-            voiceUi.onInsert = { voiceInputManager.insertResult() }
-            voiceUi.onUndo = { voiceInputManager.undoInsert() }
             voiceUi.onDismiss = { voiceInputManager.close() }
         }
     }
@@ -370,15 +366,7 @@ class InputBarDelegate(override val di: DI) :
     }
 
     override fun onStartInput(info: EditorInfo) {
-        voiceInputManager.onEditorStarted()
         evalAlwaysUiState()
-    }
-
-    override fun onSelectionUpdate(
-        start: Int,
-        end: Int,
-    ) {
-        voiceInputManager.onSelectionUpdate(start, end)
     }
 
     override fun onWindowAttached(window: BoardWindow) {

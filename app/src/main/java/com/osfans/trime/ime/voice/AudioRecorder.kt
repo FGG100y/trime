@@ -20,6 +20,10 @@ import kotlin.math.sqrt
  * Captures 16 kHz mono PCM from the microphone and converts it to a float
  * array in the range `[-1, 1]`, which is what sherpa-onnx expects.
  *
+ * Audio is handed to [start]'s callback block by block and is **not** retained:
+ * segmentation and recognition happen as the user speaks, so a session can run
+ * for as long as the user wants without memory growing with it.
+ *
  * Callers must hold the `RECORD_AUDIO` permission.
  */
 class AudioRecorder(
@@ -32,22 +36,26 @@ class AudioRecorder(
 
     private var audioRecord: AudioRecord? = null
     private var worker: Thread? = null
-    private val lock = Any()
-
-    // A growable primitive buffer. An ArrayList<Float> boxes every sample,
-    // allocating ~16k objects per second, which is pure GC pressure; a plain
-    // FloatArray keeps the capture allocation-free after the initial growth.
-    private var samples = FloatArray(sampleRate * 4)
-    private var sampleCount = 0
-    private val maxSamples = sampleRate * MAX_RECORDING_SECONDS
 
     @Volatile
     private var recording = false
 
+    // Called from the capture thread for every block, so a session can feed a
+    // live segmenter instead of waiting for stop().
+    @Volatile
+    private var onBlock: ((FloatArray) -> Unit)? = null
+
     val isRecording: Boolean get() = recording
 
+    /**
+     * Starts capturing.
+     *
+     * @param onBlock invoked on the capture thread with each block of samples.
+     *   Blocks are only ever handed out while capturing, and never after [stop]
+     *   returns.
+     */
     @SuppressLint("MissingPermission")
-    fun start(): Boolean {
+    fun start(onBlock: ((FloatArray) -> Unit)? = null): Boolean {
         if (recording) return true
 
         val minBuffer =
@@ -76,7 +84,6 @@ class AudioRecorder(
             return false
         }
 
-        synchronized(lock) { sampleCount = 0 }
         audioRecord = record
         try {
             record.startRecording()
@@ -93,17 +100,9 @@ class AudioRecorder(
             return false
         }
         recording = true
+        this.onBlock = onBlock
         worker = Thread({ readLoop(record) }, "trime-voice-recorder").apply { start() }
         return true
-    }
-
-    /** Appends one sample, growing the buffer geometrically up to [maxSamples]. */
-    private fun append(value: Float) {
-        if (sampleCount >= maxSamples) return
-        if (sampleCount == samples.size) {
-            samples = samples.copyOf(minOf(samples.size * 2, maxSamples))
-        }
-        samples[sampleCount++] = value
     }
 
     private fun readLoop(record: AudioRecord) {
@@ -118,45 +117,36 @@ class AudioRecorder(
                 break
             }
             if (read == 0) continue
+            val block = FloatArray(read)
             var sum = 0.0
-            synchronized(lock) {
-                for (i in 0 until read) {
-                    val value = buffer[i] / 32768f
-                    append(value)
-                    sum += value.toDouble() * value.toDouble()
-                }
+            for (i in 0 until read) {
+                val value = buffer[i] / 32768f
+                block[i] = value
+                sum += value.toDouble() * value.toDouble()
             }
             _amplitude.value = sqrt(sum / read).toFloat()
+            runCatching { onBlock?.invoke(block) }
+                .onFailure { Timber.e(it, "Voice block callback failed") }
         }
     }
 
-    /** Stops the capture and returns everything recorded so far. */
-    fun stop(): FloatArray {
-        if (!recording) return FloatArray(0)
+    /** Stops the capture and releases the microphone. */
+    fun stop() {
+        if (!recording) return
         recording = false
         worker?.join(500)
         worker = null
+        onBlock = null
         audioRecord?.let { record ->
             runCatching { record.stop() }
             record.release()
         }
         audioRecord = null
         _amplitude.value = 0f
-        return synchronized(lock) {
-            val result = samples.copyOf(sampleCount)
-            sampleCount = 0
-            result
-        }
     }
 
-    /** Stops the capture and discards the buffered audio. */
+    /** Stops the capture. */
     fun cancel() {
         stop()
-        synchronized(lock) { sampleCount = 0 }
-    }
-
-    private companion object {
-        /** Hard cap on one recording (~60 s), a safety net if a session is lost. */
-        const val MAX_RECORDING_SECONDS = 60
     }
 }

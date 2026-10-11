@@ -281,9 +281,6 @@
     <string name="voice_preparing">Preparing…</string>
     <string name="voice_cancel">Cancel</string>
     <string name="voice_retry">Retry</string>
-    <string name="voice_undo">Undo</string>
-    <string name="voice_undo_failed">Couldn\'t undo; the result is still in the input bar</string>
-    <string name="voice_inserted">Inserted</string>
     <string name="voice_permission_needed">Microphone permission is required for local voice input</string>
     <string name="voice_no_model">No voice model installed, please import one in settings</string>
     <string name="voice_unsupported_abi">Local voice input is not supported on this device architecture</string>

@@ -20,7 +20,6 @@ import com.osfans.trime.util.rippleDrawable
 import splitties.dimensions.dp
 import splitties.resources.drawable
 import splitties.views.dsl.constraintlayout.after
-import splitties.views.dsl.constraintlayout.before
 import splitties.views.dsl.constraintlayout.centerVertically
 import splitties.views.dsl.constraintlayout.constraintLayout
 import splitties.views.dsl.constraintlayout.endOfParent
@@ -42,13 +41,12 @@ import splitties.views.imageDrawable
 private const val LEVEL_TRACK_ALPHA = 60
 
 /**
- * The voice input chip in the always-bar: the recording level, the recognising
- * status and the held transcript, in place of the toolbar while a session is
- * active.
+ * The voice input chip in the always-bar: the microphone and the recording
+ * level, in place of the toolbar while a session is active.
  *
- * The microphone is the start/stop toggle. The trailing button is one control
- * that closes while the transcript is pending and undoes once it has been
- * inserted, so the same spot ends up as "undo (once), then close (again)".
+ * The whole chip is the start/stop toggle. Finished utterances are inserted
+ * into the editor while the user speaks, so there is no result to hold here and
+ * no undo/close actions: the bar only reports that the microphone is live.
  * All the callbacks are wired by `InputBarDelegate`.
  */
 class VoiceSuggestionUi(
@@ -59,12 +57,9 @@ class VoiceSuggestionUi(
 
     var onStop: (() -> Unit)? = null
     var onStart: (() -> Unit)? = null
-    var onInsert: (() -> Unit)? = null
-    var onUndo: (() -> Unit)? = null
     var onDismiss: (() -> Unit)? = null
 
     private var micHighlighted = false
-    private var showingUndo = false
 
     private val icon =
         imageView {
@@ -90,11 +85,6 @@ class VoiceSuggestionUi(
             progressBackgroundTintList = ColorStateList.valueOf(levelTrackColor())
         }
 
-    private val trailing =
-        imageView {
-            isFocusable = false
-        }
-
     /** Holds the status text and the level meter in the same slot. */
     private val middle =
         frameLayout {
@@ -103,11 +93,10 @@ class VoiceSuggestionUi(
         }
 
     private val layout =
-        // The microphone and the trailing button are pinned to the two ends,
-        // and the middle slot (text or level) fills whatever is left, so
-        // switching between them never moves the ends.
+        // The microphone is pinned to the left and the middle slot (text or
+        // level) fills whatever is left, so switching between them never moves
+        // the microphone.
         constraintLayout {
-            val spacing = ctx.dp(6)
             add(
                 icon,
                 lParams(ctx.dp(20), ctx.dp(20)) {
@@ -118,14 +107,7 @@ class VoiceSuggestionUi(
             add(
                 middle,
                 lParams(matchConstraints, wrapContent) {
-                    after(icon, spacing)
-                    before(trailing)
-                    centerVertically()
-                },
-            )
-            add(
-                trailing,
-                lParams(ctx.dp(20), ctx.dp(20)) {
+                    after(icon, ctx.dp(6))
                     endOfParent(ctx.dp(10))
                     centerVertically()
                 },
@@ -156,7 +138,6 @@ class VoiceSuggestionUi(
         applyMicTint()
         text.visibility = View.GONE
         level.visibility = View.VISIBLE
-        showCloseButton()
         icon.setOnClickListener { onStop?.invoke() }
         chip.setOnClickListener { onStop?.invoke() }
     }
@@ -170,27 +151,8 @@ class VoiceSuggestionUi(
         text.text = ctx.getString(textRes)
         text.visibility = View.VISIBLE
         level.visibility = View.GONE
-        showCloseButton()
         icon.setOnClickListener { onDismiss?.invoke() }
         chip.setOnClickListener { onDismiss?.invoke() }
-    }
-
-    fun setResult(
-        value: String,
-        inserted: Boolean,
-    ) {
-        micHighlighted = false
-        applyMicTint()
-        text.text = value
-        text.visibility = View.VISIBLE
-        level.visibility = View.GONE
-        icon.setOnClickListener { onStart?.invoke() }
-        chip.setOnClickListener { if (!inserted) onInsert?.invoke() }
-        if (inserted) {
-            showUndoButton()
-        } else {
-            showCloseButton()
-        }
     }
 
     /** Updates the level meter; 0..1, already smoothed by the caller. */
@@ -204,32 +166,7 @@ class VoiceSuggestionUi(
         level.progressTintList = ColorStateList.valueOf(colors.hilitedCandidateTextColor)
         level.progressBackgroundTintList = ColorStateList.valueOf(levelTrackColor())
         applyMicTint()
-        syncTrailingButton()
         chip.background = rippleDrawable(colors.hilitedCandidateBackColor)
-    }
-
-    /** The trailing button closes the pending result. */
-    private fun showCloseButton() {
-        showingUndo = false
-        syncTrailingButton()
-        trailing.setOnClickListener { onDismiss?.invoke() }
-    }
-
-    /** The trailing button undoes the insert, then falls back to close. */
-    private fun showUndoButton() {
-        showingUndo = true
-        syncTrailingButton()
-        trailing.setOnClickListener { onUndo?.invoke() }
-    }
-
-    private fun syncTrailingButton() {
-        if (showingUndo) {
-            trailing.setImageResource(R.drawable.ic_baseline_refresh_reversed_24)
-            trailing.imageDrawable?.setTint(colors.hilitedCandidateTextColor)
-        } else {
-            trailing.setImageResource(R.drawable.ic_outline_cancel_24)
-            trailing.imageDrawable?.setTint(colors.candidateTextColor)
-        }
     }
 
     private fun applyMicTint() {

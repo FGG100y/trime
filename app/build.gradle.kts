@@ -47,6 +47,12 @@ android {
         resValues = true
     }
 
+    androidResources {
+        // The VAD model is read straight from assets by sherpa-onnx, so it must
+        // stay uncompressed.
+        noCompress += "onnx"
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true

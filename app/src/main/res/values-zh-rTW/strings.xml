@@ -281,9 +281,6 @@
     <string name="voice_preparing">正在準備……</string>
     <string name="voice_cancel">取消</string>
     <string name="voice_retry">重錄</string>
-    <string name="voice_undo">復原</string>
-    <string name="voice_undo_failed">無法復原，結果仍保留在候選欄</string>
-    <string name="voice_inserted">已上屏</string>
     <string name="voice_permission_needed">本機語音輸入需要麥克風權限</string>
     <string name="voice_no_model">尚未安裝語音模型，請先在設定中匯入</string>
     <string name="voice_unsupported_abi">當前裝置架構不支援本地語音輸入</string>
