@@ -91,7 +91,7 @@ storage/RAM baseline and the release-name traps are in
 
 The left-handed 九宫格 layout this build is used with (`t9` / `t9_en`, long-press
 space bound to voice) lives in a separate repo, **trime-config**
-(`git@github.com:FGG100y/trime-config.git`, currently private); its README covers
+(<https://github.com/FGG100y/trime-config>); its README covers
 `script/push.sh` and the *Deploy* step. With a stock upstream APK you only get the "system voice input method"
 option, not the local engine.
 

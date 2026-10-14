@@ -83,7 +83,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 ### 鍵盤那一側
 
 這個建置配合使用的左手九宮格佈局（`t9` / `t9_en`，長按空白鍵綁定語音）在另一個倉庫
-**trime-config**（`git@github.com:FGG100y/trime-config.git`，目前是私有倉庫）；它的
+**trime-config**（<https://github.com/FGG100y/trime-config>）；它的
 README 裡有 `script/push.sh` 和“部署”那一步。用官方原版 APK 的話只有“系統語音輸入法”
 這個選項，沒有本機辨識引擎。
 
