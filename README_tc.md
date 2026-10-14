@@ -32,6 +32,61 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 - 配置文件 [rimerc](https://github.com/Bambooin/rimerc)
 
+## 本機語音輸入（本分支特有）
+
+> 僅存在於 `feature/on-device-voice-input` 分支的實驗性工作，尚未併入上游 Trime。
+> 設計與實作說明：[`doc/voice-input.md`](doc/voice-input.md)。
+
+本分支加入了可選的、**完全在本機執行**的語音輸入：長按空白鍵說話，停頓一下，剛才那句就
+插到游標處。音訊不離開裝置，App 依然不申請 `INTERNET` 權限。
+
+與其自己照著步驟編譯、匯入模型，不如把整件事交給編碼 Agent（Claude Code、Codex、pi……）。
+把下面這段原樣複製給它：
+
+```text
+請在手機上幫我裝好帶本機語音輸入的 Trime：
+
+1. clone https://github.com/FGG100y/trime ，切到 feature/on-device-voice-input 分支
+2. 先跑 script/fetch-sherpa-onnx.sh，再用 BUILD_ABI=arm64-v8a 編 debug 包
+   （別編 armeabi-v7a，目前會失敗）
+3. adb install -r 裝 debug 包（com.osfans.trime.debug）
+4. 可選：幫我把語音模型解壓縮到 /sdcard/Download 下
+5. 最後把“只有我能在手機上做”的步驟列成清單給我
+
+約束：adb 只允許操作這一個 App（安裝 / 啟動 / 看日誌 / 截圖）。不要替我點其它 App 或
+系統設定，也不要在裝置上代我操作——把步驟寫下來，我自己執行。
+```
+
+### Agent 能自己做完的
+
+- 拉取預編譯原生函式庫並建置：`script/fetch-sherpa-onnx.sh`，然後
+  `BUILD_ABI=arm64-v8a ./gradlew :app:assembleDebug`（約 240 KB 的 API jar 已提交，
+  乾淨檢出即可編譯；約 30 MB 的 `.so` 沒有提交）。
+- 用 adb 安裝，並在你試用的同時抓這個輸入法自己的日誌。
+- 下載並解壓縮模型到共享儲存空間，讓匯入這一步更省事。
+
+### 只能你自己做的（讓 Agent 把這份清單交給你）
+
+| 步驟 | 在哪裡 |
+| --- | --- |
+| 啟用並選中“Trime（debug）” | 系統設定 → 語言和輸入法（輸入法只能由使用者自行啟用） |
+| 授權麥克風 | 第一次長按空白鍵時跳出的對話方塊 |
+| 匯入模型（在系統選擇器裡選模型**資料夾**） | Trime 設定 → *Local voice input* → Import model |
+| 把 *Long press space* 設為 *Local voice input* | Trime 設定 → *Local voice input*（“一般”頁也有） |
+| 部署一次 Rime，才會產生 `t9.prism.bin` 等 | Trime 主介面 →“**部署**”（僅當你同時使用配套的左手九宮格配置，見下） |
+
+推薦模型：**SenseVoiceSmall**
+（[`sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17`](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2)，
+約 230 MB，中文效果好，自帶標點）。其它可用的模型結構、儲存/記憶體基線、以及 release
+命名裡的坑，見 [`doc/voice-input.md`](doc/voice-input.md)。
+
+### 鍵盤那一側
+
+這個建置配合使用的左手九宮格佈局（`t9` / `t9_en`，長按空白鍵綁定語音）在另一個倉庫
+**trime-config**（`git@github.com:FGG100y/trime-config.git`，目前是私有倉庫）；它的
+README 裡有 `script/push.sh` 和“部署”那一步。用官方原版 APK 的話只有“系統語音輸入法”
+這個選項，沒有本機辨識引擎。
+
 ## 沿革
 
 TRIME 是 Tongwen RIME 或是 ThaeRvInputMEthod 的縮寫:
