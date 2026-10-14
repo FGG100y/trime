@@ -34,6 +34,67 @@ Trime is originally a frontend of open-source [Android Traditional Chinese IME],
 
 - Configurations [rimerc](https://github.com/Bambooin/rimerc)
 
+## Local voice input (this fork)
+
+> Fork-only work in progress on `feature/on-device-voice-input`, not part of
+> upstream Trime yet. Design and implementation notes:
+> [`doc/voice-input.md`](doc/voice-input.md).
+
+This branch adds optional, **fully on-device** voice input: long press the space
+bar, speak, and each finished utterance is inserted at the cursor as you pause.
+Audio never leaves the phone, and the app still does not request `INTERNET`.
+
+Instead of following the build and import steps by hand, you can hand the whole
+job to a coding agent (Claude Code, Codex, pi, ...). Copy this prompt as-is:
+
+```text
+Please set Trime up with on-device voice input on my phone:
+
+1. clone https://github.com/FGG100y/trime and check out the
+   feature/on-device-voice-input branch
+2. run script/fetch-sherpa-onnx.sh, then build the debug APK with
+   BUILD_ABI=arm64-v8a (do not build armeabi-v7a, it currently fails)
+3. adb install -r the debug APK (com.osfans.trime.debug)
+4. optionally unpack a speech model under /sdcard/Download for me
+5. then hand me a checklist of everything only I can do on the phone
+
+Constraint: use adb only on this app (install / launch / logcat / screenshot).
+Do not tap around other apps or system settings, and do not perform actions on
+my device for me - write the steps down and I will run them.
+```
+
+### What the agent can do on its own
+
+- Fetch the prebuilt native library and build: `script/fetch-sherpa-onnx.sh`,
+  then `BUILD_ABI=arm64-v8a ./gradlew :app:assembleDebug` (the ~240 KB API jar is
+  committed so a clean checkout compiles; the ~30 MB `.so` files are not).
+- Install over adb and stream this IME's own logs while you try it.
+- Download and unpack a model to shared storage, so the import step is quick.
+
+### What only you can do (ask the agent for this checklist)
+
+| Step | Where |
+| --- | --- |
+| Enable and select "Trime (debug)" | System settings → Languages & input (an IME can only be enabled by the user) |
+| Grant the microphone permission | The dialog shown on the first long press of space |
+| Import the model (pick the model **folder** in the system picker) | Trime Settings → *Local voice input* → Import model |
+| Set *Long press space* to *Local voice input* | Trime Settings → *Local voice input* (also on the General page) |
+| Deploy Rime once, so `t9.prism.bin` and friends are built | Trime main screen → **Deploy** (only if you also use the companion left-handed t9 config, see below) |
+
+Recommended model: **SenseVoiceSmall**
+([`sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17`](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2),
+~230 MB, good Chinese, punctuates out of the box). Other supported layouts,
+storage/RAM baseline and the release-name traps are in
+[`doc/voice-input.md`](doc/voice-input.md).
+
+### The keyboard side
+
+The left-handed 九宫格 layout this build is used with (`t9` / `t9_en`, long-press
+space bound to voice) lives in a separate repo, **trime-config**
+(`git@github.com:FGG100y/trime-config.git`, currently private); its README covers
+`script/push.sh` and the *Deploy* step. With a stock upstream APK you only get the "system voice input method"
+option, not the local engine.
+
 ## History
 
 TRIME is the abbreviation of _Tongwen RIME_ or _ThaeRv Input Method_.
